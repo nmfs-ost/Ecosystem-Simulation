@@ -39,7 +39,8 @@ source(file.path("Rscript", "plot_data.R"))
 #### ----------Set up hard coded values ####
 
 # Define model years
-years <- 1980:2023
+years <- 1:27 ## FLAG/TO DO:the Ecospace files have timesteps, not years. Also years go from 1-37, right now,
+              # but in future we would need to extend the time series to also have forecast years.
 
 # Define ages
 ages <- 0:4
@@ -61,7 +62,7 @@ FIMS::clear()
 
 # Local directory for downloaded data
 data_destination <- file.path(
-  getwd(), "data", "ecosim_sefsc"
+  getwd(), "data", "ecospace_sefsc"
 )
 
 # Download data only if directory is missing or empty
@@ -73,11 +74,11 @@ if (!dir.exists(data_destination) || length(list.files(data_destination)) == 0) 
   googledrive::drive_auth(scopes = "https://www.googleapis.com/auth/drive")
 
   # Google Drive folder ID
-  ecosim_sefsc_id <- googledrive::as_id("1dDj8RzHSDyaG19N9OgPV371vdRzZY7e8")
+  ecospace_sefsc_id <- googledrive::as_id("1CXeNxhmR_93b0Yc54ek2O9XWlU9MZ5tk")
 
   # Download all files recursively
   download_drive_recursive(
-    drive_item = ecosim_sefsc_id,
+    drive_item = ecospace_sefsc_id,
     local_destination_path = data_destination
   )
 
@@ -101,7 +102,7 @@ functional_groups |> print(n = 100)
 # Load EwE model output
 data_om <- ecosystemdata::load_model(
   directory = data_destination,
-  type = "ewe_ecosim",
+  type = "ewe_ecospace",
   functional_groups = functional_groups
 ) |>
   # TODO: define year range
@@ -117,8 +118,9 @@ data_environment <- ecosystemdata::load_csv_environmental_data(
 )
 
 # Load diet composition data
+# This loads the diet composition from Ecospace that is annual time steps
 data_diet_composition <- ecosystemdata::load_csv_diet_composition(
-  file.path(data_destination, "1-Diet composition.csv")
+  file.path(data_destination, "Ecospace_Annual_Average_Region_0_Consumption.csv")
 )
 
 # Combine all inputs into a single object for SEM
@@ -153,6 +155,7 @@ catch_agecomp_om <- truth_om |>
   dplyr::select(truth_year, truth_label, truth_group, truth_value)
 
 # Numbers index
+## TO DO: This currently doesn't work with Ecospace data. Need to derive numbers from the existing data output
 numbers_om <- truth_om |>
   dplyr::filter(
     truth_label == "numbers",
@@ -163,6 +166,7 @@ numbers_om <- truth_om |>
   dplyr::select(truth_year, truth_label, truth_value)
 
 # Weight-at-age
+## TO DO: currently doesn't work for Ecospace. Need to derive weight-at-age from the ecospace data files still
 weight_om <- truth_om |>
   dplyr::filter(
   truth_label == "weight",
@@ -178,7 +182,7 @@ weight_om <- truth_om |>
 # It could be changed. The current implementation uses static diet composition
 # from Ecopth->input->Diet composition, but it actually
 # changes over time in the EwE model as prey become more/less available.
-# TODO: support time-varying diet composition from EwE outputs?
+# TODO: support time-varying diet composition from EwE outputs
 sem <- ecosystemdata::create_sem(
   data = data,
   focal_functional_group = "Menhaden (0yr)",
@@ -226,6 +230,7 @@ catch_agecomp_multinomial <- catch_agecomp_om |>
 # TODO:
 # - Define realistic catchability and selectivity patterns
 # - Replace with ecosystemom::create_survey() wrapper
+# - This doesn't work for EcoSpace b/c we don't currently have numbers or weight-at-age
 truth_group <- weight_om |>
   dplyr::pull(truth_group) |>
   unique()
