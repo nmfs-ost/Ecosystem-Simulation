@@ -1,0 +1,45 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
+// https://github.com/microsoft/vscode-dev-containers/tree/v0.234.0/containers/r
+{
+	"name": "R (rocker/r-ver base)",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "ghcr.io/rocker-org/devcontainer/r-ver:4.5", //commma needed if other sections are used.
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	"features": {
+    "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {},
+    "ghcr.io/rocker-org/devcontainer-features/r-packages:1": {
+    "packages": "dplyr,ggplot2,kableExtra,tibble,tidyr",
+    "installSystemRequirements": true
+    },
+    // option to run rstudio. you can type rserver into the command line to
+    // get an session going (opens on a port, that you can open as a 
+    // separate browser window).
+    // more details: https://github.com/rocker-org/devcontainer-features/blob/main/src/rstudio-server/README.md
+    "ghcr.io/rocker-org/devcontainer-features/rstudio-server:0": {}
+  },
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "echo 'options(repos = c(CRAN = \"https://cloud.r-project.org\"))' | sudo sh -c 'cat - >>\"${R_HOME}/etc/Rprofile.site\"'",
+	
+	// Configure tool-specific properties.
+	 "customizations": {
+	   "vscode": {
+	 		// Set *default* container specific settings.json values on container create.
+	 		// Add the IDs of extensions you want installed when the container is created.
+	 		"extensions": [
+	 			"ms-vsliveshare.vsliveshare",
+        "ms-vscode.live-server",
+				"GitHub.codespaces",
+				"reditorsupport.r",
+				"rdebugger.r-debugger",
+        "github.vscode-pull-request-github",
+        "google.geminicodeassist"
+	 		]
+	     }
+	 
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}
+}
