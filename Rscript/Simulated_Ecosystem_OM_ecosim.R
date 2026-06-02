@@ -7,7 +7,6 @@ if (!requireNamespace("pak", quietly = TRUE)) {
 }
 
 # Required packages
-# TODO: need to use the main branch of NOAA-FIMS/ecosystemom later
 required_packages <- c(
   "fs",
   "ggplot2",
@@ -31,8 +30,7 @@ source(file.path("Rscript", "plot_data.R"))
 #### ----------Set up hard coded values ####
 
 # Define model years
-years <- 1:27 ## FLAG/TO DO:the Ecospace files have timesteps, not years. Also years go from 1-37, right now,
-              # but in future we would need to extend the time series to also have forecast years.
+years <- 1980:2023
 
 # Define ages
 ages <- 0:4
@@ -71,27 +69,11 @@ FIMS::clear()
 survey_index_sd <- 0.1
 survey_agecomp_sample_size <- 200
 
-average_weight_agecomp_om <- c(
-    0.00000376,
-    0.0000729,
-    0.000206,
-    0.000348,
-    0.000521
-  )
-
-average_natural_mortality_agecomp_om <- c(
-  2.33,
-  1.37,
-  1.16,
-  1.22,
-  1.31
-)
-
 #### ----------Initializing input files and directories ####
 
 # Local directory for downloaded data
 data_destination <- file.path(
-  getwd(), "data", "ecospace_sefsc"
+  getwd(), "data", "ecosim_sefsc"
 )
 
 # Download data only if directory is missing or empty
@@ -103,11 +85,11 @@ if (!dir.exists(data_destination) || length(list.files(data_destination)) == 0) 
   googledrive::drive_auth(scopes = "https://www.googleapis.com/auth/drive")
 
   # Google Drive folder ID
-  ecospace_sefsc_id <- googledrive::as_id("1CXeNxhmR_93b0Yc54ek2O9XWlU9MZ5tk")
+  ecosim_sefsc_id <- googledrive::as_id("1dDj8RzHSDyaG19N9OgPV371vdRzZY7e8")
 
   # Download all files recursively
   download_drive_recursive(
-    drive_item = ecospace_sefsc_id,
+    drive_item = ecosim_sefsc_id,
     local_destination_path = data_destination
   )
 
@@ -123,24 +105,27 @@ functional_groups <- ecosystemom::get_functional_groups(
   file_path = file.path(data_destination, "1-Basic estimates.csv")
 )
 
-names(ages) <- 
-  names(selectivity_survey) <- 
-  names(average_weight_agecomp_om) <- 
-  names(average_natural_mortality_agecomp_om) <- functional_groups |>
+functional_groups |> print(n = 100)
+names(ages) <- functional_groups |>
   dplyr::filter(species == "Menhaden") |>
   dplyr::pull(group)
 
+names(selectivity_survey) <- functional_groups |>
+  dplyr::filter(species == "Menhaden") |>
+  dplyr::pull(group)
 # TODO:
 # - Add units for biomass, catch, and weight
 # - Confirm whether discard data are included
 # Load EwE model output
 data_om <- ecosystemom::load_model(
   directory = data_destination,
-  type = "ewe_ecospace",
+  type = "ewe_ecosim",
   functional_groups = functional_groups,
-  c(
+  unit = c(
     "biomass" = "mt",
-    "catch" = "mt"
+    "catch" = "mt",
+    "total_mortality" = "year^-1",
+    "weight" = "mt"
   )
 ) |>
   # TODO: define year range
@@ -156,9 +141,8 @@ data_environment <- ecosystemom::load_csv_environmental_data(
 )
 
 # Load diet composition data
-# This loads the diet composition from Ecospace that is annual time steps
 data_diet_composition <- ecosystemom::load_diet_composition(
-  file.path(data_destination, "Ecospace_Annual_Average_Region_0_Consumption.csv")
+  file.path(data_destination, "1-Diet composition.csv")
 )
 
 # Combine all inputs into a single object for SEM
@@ -182,24 +166,35 @@ catch_index_om <- truth_om |>
     truth_time_step == "yearly") |>
   tidyr::unnest(cols = c(truth_om))
 
+# Extract and unnest annual weight-at-age
+weight_agecomp_om <- truth_om |>
+  dplyr::filter(
+    truth_label == "weight",
+    truth_type == "agecomp",
+    truth_time_step == "yearly"
+  ) |> 
+  tidyr::unnest(cols = c(truth_om)) |>
+  # TODO: double check unit of weight
+  dplyr::mutate(
+    truth_value = truth_value / 1000,
+    truth_unit = "mt"
+  )
+
+average_weight_agecomp_om <- weight_agecomp_om |>
+  dplyr::group_by(species_name, truth_group) |>
+  dplyr::summarise(
+    avg_weight = mean(truth_value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
 # Extract and unnest annual catch-at-age in numbers
-catch_agecomp_om_mt <- truth_om |> 
+catch_agecomp_om <- truth_om |> 
   dplyr::filter(
     truth_label == "catch",
     truth_type == "agecomp",
     truth_time_step == "yearly"
   ) |>
-  tidyr::unnest(cols = c(truth_om))
-
-# TODO: find true weight age comp from Ecospace
-weight_agecomp_om <- catch_agecomp_om_mt |>
-  dplyr::mutate(
-    truth_type = "weight",
-    truth_value = unname(average_weight_agecomp_om[truth_group])
-  )
-
-# Get catch age composition
-catch_agecomp_om <- catch_agecomp_om_mt |>
+  tidyr::unnest(cols = c(truth_om)) |>
   dplyr::left_join(
     weight_agecomp_om |>
       dplyr::select(-species_name, -truth_label, -truth_type, -truth_time_step, -truth_unit), 
@@ -225,55 +220,43 @@ biomass_index_om <- truth_om |>
     truth_unit = "mt"
   )
 
-# Get number-at-age
+# Extract and unnest annual number-at-age
 number_agecomp_om <- truth_om |>
   dplyr::filter(
-    truth_label == "biomass",
+    truth_label == "numbers",
     truth_type == "agecomp",
     truth_time_step == "yearly"
   ) |> 
   tidyr::unnest(cols = c(truth_om)) |>
   dplyr::mutate(
-    weight_value = unname(average_weight_agecomp_om[truth_group]),
-    truth_value = ceiling(truth_value / weight_value),
+    truth_value = ceiling(truth_value / 1000),
     truth_unit = "numbers"
-  ) |>
-  dplyr::select(-weight_value)
-
-# Get annual natural mortality by age
-natural_mortality_agecomp_om <- catch_agecomp_om |>
-  dplyr::mutate(
-    truth_label = "natural_mortality",
-    truth_unit = "year^-1",
-    truth_value = unname(average_natural_mortality_agecomp_om[truth_group])
   )
 
-# Get annual fishing mortality by age
-fishing_mortality_agecomp_om <- truth_om |>
+# Extract and unnest annual natural mortality by age
+natural_mortality_agecomp_om <- truth_om |>
   dplyr::filter(
-    truth_label == "biomass",
+    truth_label == "natural_mortality",
     truth_type == "agecomp",
     truth_time_step == "yearly"
   ) |> 
-  tidyr::unnest(cols = c(truth_om)) |>
-  dplyr::left_join(
-    truth_om |>
-      dplyr::filter(
-        truth_label == "catch",
-        truth_type == "agecomp",
-        truth_time_step == "yearly"
-      ) |> 
-      tidyr::unnest(cols = c(truth_om)) |>
-      dplyr::select(-species_name, -truth_label, -truth_type, -truth_time_step, -truth_unit), 
-    by = c("truth_year", "truth_group"),
-    suffix = c("_biomass", "_catch")
-  ) |>
-  dplyr::mutate(
-    truth_label = "fishing_mortality",
-    truth_unit = "year^-1",
-    truth_value = truth_value_catch / truth_value_biomass
-  ) |>
-  dplyr::select(-truth_value_biomass, -truth_value_catch)
+  tidyr::unnest(cols = c(truth_om))
+
+average_natural_mortality_agecomp_om <- natural_mortality_agecomp_om |>
+  dplyr::group_by(species_name, truth_group) |>
+  dplyr::summarise(
+    avg_M = mean(truth_value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Extract and unnest annual fishing mortality by age
+fishing_mortality_agecomp_om <- truth_om |>
+  dplyr::filter(
+    truth_label == "fishing_mortality",
+    truth_type == "agecomp",
+    truth_time_step == "yearly"
+  ) |> 
+  tidyr::unnest(cols = c(truth_om))
 
 # Estimate selectivity from fishing mortality-at-age
 catch_selectivity <- ecosystemom::estimate_true_selectivity(
@@ -283,12 +266,14 @@ catch_selectivity <- ecosystemom::estimate_true_selectivity(
 ) |>
   dplyr::mutate(fleet_name = fishing_fleet_name)
 
-fishing_mortality_index_om <- fishing_mortality_agecomp_om |>
-  dplyr::group_by(species_name, truth_year) |>
-  dplyr::summarise(
-    truth_value = max(truth_value, na.rm = TRUE),
-    .groups = "drop"
-  )
+# Extract and unnest annual fishing mortality: apical F
+fishing_mortality_index_om <- truth_om |>
+  dplyr::filter(
+    truth_label == "fishing_mortality",
+    truth_type == "index",
+    truth_time_step == "yearly"
+  ) |>
+  tidyr::unnest(cols = c(truth_om))
 
 #### ---------- Generate "Data" from OM for testing EMs ####
 
@@ -470,9 +455,8 @@ f_fims |>
   ggplot2::labs(
     x = "Model Year"
   )
-
 #### ---------- Plot data ####
-figures_path <- file.path(getwd(), "figures", "ecospace_sefsc")
+figures_path <- file.path(getwd(), "figures", "ecosim_sefsc")
 fs::dir_create(figures_path)
 
 biomass_index_om <- truth_om |>
@@ -505,7 +489,12 @@ ggplot2::ggsave(
   dpi = 1200
 )
 
-numbers_at_age_om <- number_agecomp_om |>
+numbers_at_age_om <- truth_om |>
+  dplyr::filter(
+    truth_label == "numbers",
+    truth_type == "agecomp",
+    truth_time_step == "yearly") |>
+  tidyr::unnest(cols = c(truth_om)) |>
   dplyr::group_by(truth_year) |>
   # Normalize both columns to proportions (0 to 1)
   dplyr::mutate(
@@ -527,7 +516,7 @@ numbers_at_age_figure <- ggplot2::ggplot(
   )
 ggplot2::ggsave(
   filename = "numbers_at_age_om.png",
-  path = file.path("figures"),
+  path = figures_path,
   plot = numbers_at_age_figure,
   width = 8,
   height = 6,
@@ -597,7 +586,7 @@ plot_survey_vs_catch(
 # It could be changed. The current implementation uses static diet composition
 # from Ecopth->input->Diet composition, but it actually
 # changes over time in the EwE model as prey become more/less available.
-# TODO: support time-varying diet composition from EwE outputs
+# TODO: support time-varying diet composition from EwE outputs?
 sem <- ecosystemom::create_dsem_inputs(
   data = data_dsem,
   focal_functional_group = "Menhaden (0yr)",
