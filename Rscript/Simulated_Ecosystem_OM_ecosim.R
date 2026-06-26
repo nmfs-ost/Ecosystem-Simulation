@@ -17,17 +17,25 @@ required_packages <- c(
   "NOAA-FIMS/ecosystemom",
   # For generating selectivity curves
   "NOAA-FIMS/FIMS",
+  "nmfs-ost/stockplotr",
   "purrr"
 )
 
 # Install required packages
-pak::pkg_install(required_packages)
+pak::pkg_install(required_packages, ask = FALSE)
+library(FIMS)
 
 # Source utility scripts
 source(file.path("Rscript", "utils.R"))
 source(file.path("Rscript", "plot_data.R"))
 
 #### ----------Set up hard coded values ####
+
+# biomass scalar
+biomass_scalar <- 350000
+# proportion of weight at infinity
+weight_scalar <- 696 / 1000000
+# Winf = 696 grams
 
 # Define model years
 years <- 1980:2023
@@ -40,7 +48,7 @@ ages <- 0:4
 fishing_fleet_name <- "fishing_fleet"
 # Define the uncertainty of sampled catch observations
 catch_index_sd <- 0.05
-catch_agecomp_sample_size <- 200
+catch_agecomp_sample_size <- 20
 
 # Define survey fleet
 # Define fleet name
@@ -65,9 +73,20 @@ selectivity_module_survey$slope_desc[1]$value <- selectivity_slope_desc_survey
 selectivity_survey <- purrr::map_dbl(ages, ~selectivity_module_survey$evaluate(.x))
 FIMS::clear()
 
+# Survey selectivity: Logistic selectivity
+# selectivity_inflection_point_survey <- 0.5
+# selectivity_slope_survey <- 4.0
+
+# selectivity_module_survey <- methods::new(FIMS::LogisticSelectivity)
+# selectivity_module_survey$inflection_point[1]$value <- selectivity_inflection_point_survey
+# selectivity_module_survey$slope[1]$value <- selectivity_slope_survey
+
+# selectivity_survey <- purrr::map_dbl(ages, ~selectivity_module_survey$evaluate(.x))
+# FIMS::clear()
+
 # Define the uncertainty of sampled survey observations
 survey_index_sd <- 0.1
-survey_agecomp_sample_size <- 200
+survey_agecomp_sample_size <- 20
 
 #### ----------Initializing input files and directories ####
 
@@ -164,9 +183,26 @@ catch_index_om <- truth_om |>
     truth_label == "catch",
     truth_type == "index",
     truth_time_step == "yearly") |>
-  tidyr::unnest(cols = c(truth_om))
+  tidyr::unnest(cols = c(truth_om)) |>
+  dplyr::mutate(
+    truth_value = truth_value * biomass_scalar, 
+    truth_unit = "mt"
+  )
 
 # Extract and unnest annual weight-at-age
+mean_weight_agecomp_om <- truth_om |>
+  dplyr::filter(
+    truth_label == "weight",
+    truth_type == "agecomp",
+    truth_time_step == "yearly"
+  ) |> 
+  tidyr::unnest(cols = c(truth_om)) |>
+  dplyr::mutate(truth_year = NA) |>
+  dplyr::group_by(truth_group) |>
+  dplyr::mutate(truth_value = mean(truth_value, na.rm = TRUE)) |>
+  dplyr::distinct() |>
+  dplyr::ungroup()
+
 weight_agecomp_om <- truth_om |>
   dplyr::filter(
     truth_label == "weight",
@@ -176,7 +212,7 @@ weight_agecomp_om <- truth_om |>
   tidyr::unnest(cols = c(truth_om)) |>
   # TODO: double check unit of weight
   dplyr::mutate(
-    truth_value = truth_value / 1000,
+    truth_value = truth_value * weight_scalar,
     truth_unit = "mt"
   )
 
@@ -195,6 +231,10 @@ catch_agecomp_om <- truth_om |>
     truth_time_step == "yearly"
   ) |>
   tidyr::unnest(cols = c(truth_om)) |>
+  dplyr::mutate(
+    truth_value = truth_value * biomass_scalar,
+    truth_unit = "mt"
+  ) |>
   dplyr::left_join(
     weight_agecomp_om |>
       dplyr::select(-species_name, -truth_label, -truth_type, -truth_time_step, -truth_unit), 
@@ -216,7 +256,7 @@ biomass_index_om <- truth_om |>
   ) |> 
   tidyr::unnest(cols = c(truth_om)) |>
   dplyr::mutate(
-    truth_value = truth_value, 
+    truth_value = truth_value * biomass_scalar, 
     truth_unit = "mt"
   )
 
@@ -229,7 +269,7 @@ number_agecomp_om <- truth_om |>
   ) |> 
   tidyr::unnest(cols = c(truth_om)) |>
   dplyr::mutate(
-    truth_value = ceiling(truth_value / 1000),
+    truth_value = ceiling(truth_value * biomass_scalar / weight_scalar),
     truth_unit = "numbers"
   )
 
@@ -258,13 +298,24 @@ fishing_mortality_agecomp_om <- truth_om |>
   ) |> 
   tidyr::unnest(cols = c(truth_om))
 
-# Estimate selectivity from fishing mortality-at-age
+# Option 1: Estimate time-varying selectivity from fishing mortality-at-age
 catch_selectivity <- ecosystemom::estimate_true_selectivity(
   data = fishing_mortality_agecomp_om,
   ages = ages,
   functional_form = "double_logistic"
 ) |>
   dplyr::mutate(fleet_name = fishing_fleet_name)
+
+# Option 2: time-invariant double-logistic selectivity 
+catch_selectivity_inflection_point_asc <- 1.4
+catch_selectivity_slope_asc <- 4.0
+catch_selectivity_inflection_point_desc <- 3.5
+catch_selectivity_slope_desc <- 2.5
+
+selectivity_ascending  <- 1 / (1 + exp(-catch_selectivity_slope_asc * (ages - catch_selectivity_inflection_point_asc)))
+selectivity_descending <- 1 / (1 + exp(-catch_selectivity_slope_desc * (ages - catch_selectivity_inflection_point_desc)))
+selectivity_catch_unscaled <- selectivity_ascending * (1 - selectivity_descending)
+s_max_fims <- max(selectivity_catch_unscaled)
 
 # Extract and unnest annual fishing mortality: apical F
 fishing_mortality_index_om <- truth_om |>
@@ -363,110 +414,224 @@ source(file.path("Rscript", "prepare_fims_parameters.R"))
 # Initialize and fit the FIMS estimation model
 fit_fims <- parameters |>
   FIMS::initialize_fims((data = data_fims)) |>
-  FIMS::fit_fims(optimize = TRUE)
-
+  FIMS::fit_fims(
+    optimize = TRUE,
+    control = list(
+      eval.max = 50000,
+      iter.max = 30000,
+      # rel.tol  = 1e-12,
+      # sing.tol = 1e-12,
+      trace = 0
+    )
+  )
+fit_fims@obj$gr(fit_fims@opt$par)
 # Extract estimates
-estimates_fims <- FIMS::get_estimates(fit_fims)
+year_lookup <- data.frame(
+  year_i = 1:(length(years) + 1),
+  year = c(years, get_end_year(data_fims) + 1)
+)
+
+estimates_fims <- FIMS::get_estimates(fit_fims) |>
+  # Multiply estimated fishing mortality by max selectivity
+  dplyr::mutate(
+    estimated = dplyr::if_else(
+      label == "log_Fmort" & module_id == 1,
+      log(exp(estimated) * s_max_fims),
+      estimated # Leaves all other rows exactly as they were
+    )
+  ) |>
+  dplyr::left_join(
+    year_lookup, 
+    by = c("year_i")
+  ) |>
+  dplyr::mutate(
+    uncertainty_label = "se",
+    estimate = estimated,
+    age = age_i
+  ) 
 
 FIMS::clear()
 
+estimates_fims |>
+  dplyr::filter(estimation_type == "fixed_effects" | estimation_type == "random_effects") |>
+  dplyr::select(module_name, label, fleet, year_i, age_i, input, estimated, uncertainty) |>
+  print(n = Inf)
+  
 # Compare OM and FIMS
-biomass_fims <- estimates_fims |>
-  dplyr::filter(label == "biomass") |>
-  dplyr::mutate(year = years[year_i]) |>
-  dplyr::select(year, FIMS = estimated)
+shared_scales <- list(
+  ggplot2::scale_linetype_manual(
+    name = "Model",
+    labels = c("EM", "OM"),
+    values = c("solid", "dashed") 
+  ),
+  ggplot2::scale_color_manual(
+    name = "Model",
+    labels = c("EM", "OM"),
+    values = c(
+      "EM" = "black",
+      "OM" = "#003087"
+    )
+  )
+)
 
+# Biomass
 biomass_om <- biomass_index_om |>
   dplyr::select(year = truth_year, OM = truth_value)
 
-ratio <- max(biomass_fims[["FIMS"]], na.rm = TRUE) / 
-         max(biomass_om[["OM"]], na.rm = TRUE)
+biomass_em <- stockplotr::filter_data(
+    estimates_fims |>
+      dplyr::filter(
+        label == "biomass",
+        year %in% years
+      ),
+    label_name = "biomass",
+    geom = "line"
+  ) |>
+    dplyr::mutate(group_var = "EM")
 
-biomass_fims |> 
-  dplyr::left_join(biomass_om, by = "year") |> 
-  dplyr::filter(year %in% years) |>
-  ggplot2::ggplot(ggplot2::aes(x = year)) +
-  ggplot2::geom_line(ggplot2::aes(y = FIMS, color = "FIMS"), linewidth = 1.2) +
-  ggplot2::geom_line(ggplot2::aes(y = OM * ratio, color = "OM"), linewidth = 1.2, linetype = "dashed") +
-  ggplot2::scale_y_continuous(
-    name = "FIMS Biomass",
-    sec.axis = ggplot2::sec_axis(~ . / ratio, name = "OM Biomass")
+cbind(biomass_om$OM, biomass_em$estimated)
+stockplotr::plot_timeseries(
+  biomass_em,
+  x = "year",
+  y = "estimate",
+  ylab = "biomass (metric ton)"
+) +
+  stockplotr::theme_noaa() +
+  ggplot2::geom_line(
+    data = biomass_om, 
+    ggplot2::aes(x = year, y = OM, color = "OM"),
+    linetype = "dashed"
   ) +
-  ggplot2::scale_color_manual(values = c("FIMS" = "#1f77b4", "OM" = "#ff7f0e")) +
-  ggplot2::theme_minimal(base_size = 14) +
-  ggplot2::labs(
-    x = "Model Year",
-    color = "Source"
-  )
+  shared_scales
 
-recruitment_fims <- estimates_fims |>
-  dplyr::filter(label == "expected_recruitment") |>
-  dplyr::mutate(year = years[year_i]) |>
-  dplyr::select(year, FIMS = estimated)
-
+# Recruitment
 recruitment_om <- number_agecomp_om |>
   dplyr::filter(truth_group == "0yr") |>
   dplyr::select(year = truth_year, OM = truth_value)
 
-ratio <- max(recruitment_fims[["FIMS"]], na.rm = TRUE) / 
-         max(recruitment_om[["OM"]], na.rm = TRUE)
+recruitment_em <- stockplotr::filter_data(
+    estimates_fims |>
+      dplyr::filter(
+        label == "expected_recruitment",
+        year %in% years
+      ),
+    label_name = "expected_recruitment",
+    geom = "line"
+  ) |>
+    dplyr::mutate(group_var = "EM")
 
-recruitment_fims |> 
-  dplyr::left_join(recruitment_om, by = "year") |> 
-  dplyr::filter(year %in% years) |>
-  ggplot2::ggplot(ggplot2::aes(x = year)) +
-  ggplot2::geom_line(ggplot2::aes(y = FIMS, color = "FIMS"), linewidth = 1.2) +
-  ggplot2::geom_line(ggplot2::aes(y = OM * ratio, color = "OM"), linewidth = 1.2, linetype = "dashed") +
-  ggplot2::scale_y_continuous(
-    name = "FIMS Recruitment",
-    sec.axis = ggplot2::sec_axis(~ . / ratio, name = "OM Recruitment")
+stockplotr::plot_timeseries(
+  recruitment_em,
+  x = "year",
+  y = "estimate",
+  ylab = "recruitment (metric ton)"
+) +
+  stockplotr::theme_noaa() +
+  ggplot2::geom_line(
+    data = recruitment_om, 
+    ggplot2::aes(x = year, y = OM, color = "OM"),
+    linetype = "dashed"
   ) +
-  ggplot2::scale_color_manual(values = c("FIMS" = "#1f77b4", "OM" = "#ff7f0e")) +
-  ggplot2::theme_minimal(base_size = 14) +
-  ggplot2::labs(
-    x = "Model Year",
-    color = "Source"
-  )
+  shared_scales
 
-f_fims <- estimates_fims |>
-  dplyr::filter(label == "log_Fmort",  module_id == 1) |>
-  dplyr::mutate(year = years[year_i]) |>
-  dplyr::select(year, FIMS = estimated) |>
-  dplyr::mutate(FIMS = exp(FIMS)) 
-
+# Fishing mortality
 f_om <- fishing_mortality_index_om |>
-  dplyr::select(year = truth_year, OM = truth_value)
+  dplyr::select(year = truth_year, OM = truth_value) |>
+  dplyr::mutate(OM = log(OM))
 
-ratio <- max(f_fims[["FIMS"]], na.rm = TRUE) / 
-         max(f_om[["OM"]], na.rm = TRUE)
+f_em <- stockplotr::filter_data(
+    estimates_fims |> 
+      dplyr::filter(module_id == 1),
+    label_name = "log_Fmort$",
+    geom = "line"
+  ) |>
+    dplyr::mutate(group_var = "EM")
 
-f_fims |> 
-  dplyr::left_join(f_om, by = "year") |> 
-  dplyr::filter(year %in% years) |>
-  ggplot2::ggplot(ggplot2::aes(x = year)) +
-  ggplot2::geom_line(ggplot2::aes(y = FIMS, color = "FIMS"), linewidth = 1.2) +
-  ggplot2::geom_line(ggplot2::aes(y = OM * ratio, color = "OM"), linewidth = 1.2, linetype = "dashed") +
-  ggplot2::scale_y_continuous(
-    name = "FIMS Fishing Mortality",
-    sec.axis = ggplot2::sec_axis(~ . / ratio, name = "OM Fishing Mortality")
+stockplotr::plot_timeseries(
+  f_em,
+  x = "year",
+  y = "estimate",
+  ylab = "natural log of Fishing Mortality"
+) +
+  stockplotr::theme_noaa() +
+  ggplot2::geom_line(
+    data = f_om, 
+    ggplot2::aes(x = year, y = OM, color = "OM"),
+    linetype = "dashed"
   ) +
-  ggplot2::scale_color_manual(values = c("FIMS" = "#1f77b4", "OM" = "#ff7f0e")) +
-  ggplot2::theme_minimal(base_size = 14) +
-  ggplot2::labs(
-    x = "Model Year"
+  ggplot2::scale_linetype_manual(
+    name = "Model",
+    labels = c("EM", "OM"),
+    values = c("solid", "dashed") 
+  ) +
+  ggplot2::scale_color_manual(
+    name = "Model",
+    labels = c("OM", "EM"),
+    values = c(
+      "OM" = "#003087",
+      "EM" = "black"
+    )
   )
+
+shared_scales <- list(
+  stockplotr::theme_noaa(),
+  ggplot2::scale_color_manual(
+    labels = c("Estimated", "Observed"),
+    values = c("black", "#003087")
+  ),
+  ggplot2::guides(
+    color = ggplot2::guide_legend(
+      override.aes = list( 
+        shape = c(NA, 16),          # No dot for estimate, circle (16) for Observed
+        linetype = c("solid", "blank") # Solid line for estimate, no line for Observed
+      )
+    )
+  )
+)
+# Survey
+survey_index_data <- stockplotr::filter_data(
+    estimates_fims |> dplyr::filter(module_id == 2),
+    label_name = "^index_expected$",
+    geom = "line"
+) |>
+  dplyr::mutate(group_var = "Estimated")
+
+stockplotr::plot_timeseries(
+  survey_index_data,
+  x = "year",
+  y = "estimate",
+  ylab = "Relative Index of Biomass"
+) +
+  ggplot2::geom_point(
+    data = survey_index_data,
+    ggplot2::aes(x = year, y = observed, color = "Observed")
+  ) +
+  shared_scales
+
+# Landings
+landings_data <- stockplotr::filter_data(
+    estimates_fims |> dplyr::filter(module_id == 1),
+    label_name = "^landings_expected$",
+    geom = "line"
+) |>
+  dplyr::mutate(group_var = "Estimated")
+
+stockplotr::plot_timeseries(
+  landings_data,
+  x = "year",
+  y = "estimate",
+  ylab = "Landings (metric tons)"
+) +
+  ggplot2::geom_point(
+    data = landings_data,
+    ggplot2::aes(x = year, y = observed, color = "Observed")
+  ) +
+  shared_scales
+
+
 #### ---------- Plot data ####
 figures_path <- file.path(getwd(), "figures", "ecosim_sefsc")
 fs::dir_create(figures_path)
-
-biomass_index_om <- truth_om |>
-  dplyr::filter(
-    truth_label == "biomass",
-    truth_type == "index",
-    truth_time_step == "yearly"
-  ) |>
-  tidyr::unnest(cols = c(truth_om)) |>
-  dplyr::select(truth_year, truth_label, truth_value)
 
 biomass_index_figure <- ggplot2::ggplot(
   biomass_index_om,
