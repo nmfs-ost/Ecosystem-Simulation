@@ -2,28 +2,37 @@
 # values from it
 
 #### ---------Setup, load packages ####
-if (!requireNamespace("pak", quietly = TRUE)) {
-  install.packages("pak")
-}
+# if (!requireNamespace("pak", quietly = TRUE)) {
+#   install.packages("pak")
+# }
+#
+# # Required packages
+# required_packages <- c(
+#   "fs",
+#   "ggplot2",
+#   # For downloading EwE ouputs from a Google Drive folder
+#   "googledrive",
+#   "James-Thorson-NOAA/dsem",
+#   # For standardizing EwE output and simulating observations
+#   "NOAA-FIMS/ecosystemom",
+#   # For generating selectivity curves
+#   "NOAA-FIMS/FIMS",
+#   "nmfs-ost/stockplotr",
+#   "purrr"
+# )
+#
+# # Install required packages
+# pak::pkg_install(required_packages, ask = FALSE)
+# library(FIMS)
 
-# Required packages
-required_packages <- c(
-  "fs",
-  "ggplot2",
-  # For downloading EwE ouputs from a Google Drive folder
-  "googledrive",
-  "James-Thorson-NOAA/dsem",
-  # For standardizing EwE output and simulating observations
-  "NOAA-FIMS/ecosystemom",
-  # For generating selectivity curves
-  "NOAA-FIMS/FIMS",
-  "nmfs-ost/stockplotr",
-  "purrr"
-)
-
-# Install required packages
-pak::pkg_install(required_packages, ask = FALSE)
+# Load required packages
+library(ecosystemom)
 library(FIMS)
+library(stockplotr)
+library(fs)
+library(ggplot2)
+library(googledrive)
+library(dsem)
 
 # Source utility scripts
 source(file.path("Rscript", "utils.R"))
@@ -185,7 +194,7 @@ catch_index_om <- truth_om |>
     truth_time_step == "yearly") |>
   tidyr::unnest(cols = c(truth_om)) |>
   dplyr::mutate(
-    truth_value = truth_value * biomass_scalar, 
+    truth_value = truth_value * biomass_scalar,
     truth_unit = "mt"
   )
 
@@ -195,7 +204,7 @@ mean_weight_agecomp_om <- truth_om |>
     truth_label == "weight",
     truth_type == "agecomp",
     truth_time_step == "yearly"
-  ) |> 
+  ) |>
   tidyr::unnest(cols = c(truth_om)) |>
   dplyr::mutate(truth_year = NA) |>
   dplyr::group_by(truth_group) |>
@@ -208,12 +217,12 @@ weight_agecomp_om <- truth_om |>
     truth_label == "weight",
     truth_type == "agecomp",
     truth_time_step == "yearly"
-  ) |> 
+  ) |>
   tidyr::unnest(cols = c(truth_om)) |>
   # TODO: double check unit of weight
   dplyr::mutate(
     truth_value = truth_value * weight_scalar,
-    truth_unit = "mt"
+    truth_unit == "mt"
   )
 
 average_weight_agecomp_om <- weight_agecomp_om |>
@@ -224,7 +233,7 @@ average_weight_agecomp_om <- weight_agecomp_om |>
   )
 
 # Extract and unnest annual catch-at-age in numbers
-catch_agecomp_om <- truth_om |> 
+catch_agecomp_om <- truth_om |>
   dplyr::filter(
     truth_label == "catch",
     truth_type == "agecomp",
@@ -237,12 +246,12 @@ catch_agecomp_om <- truth_om |>
   ) |>
   dplyr::left_join(
     weight_agecomp_om |>
-      dplyr::select(-species_name, -truth_label, -truth_type, -truth_time_step, -truth_unit), 
+      dplyr::select(-species_name, -truth_label, -truth_type, -truth_time_step, -truth_unit),
     by = c("truth_year", "truth_group"),
     suffix = c("_catch", "_weight")
   ) |>
   dplyr::mutate(
-    truth_value = ceiling(truth_value_catch / truth_value_weight), 
+    truth_value = ceiling(truth_value_catch / truth_value_weight),
     truth_unit = "numbers"
   ) |>
   dplyr::select(-truth_value_catch, -truth_value_weight)
@@ -253,10 +262,10 @@ biomass_index_om <- truth_om |>
     truth_label == "biomass",
     truth_type == "index",
     truth_time_step == "yearly"
-  ) |> 
+  ) |>
   tidyr::unnest(cols = c(truth_om)) |>
   dplyr::mutate(
-    truth_value = truth_value * biomass_scalar, 
+    truth_value = truth_value * biomass_scalar,
     truth_unit = "mt"
   )
 
@@ -266,7 +275,7 @@ number_agecomp_om <- truth_om |>
     truth_label == "numbers",
     truth_type == "agecomp",
     truth_time_step == "yearly"
-  ) |> 
+  ) |>
   tidyr::unnest(cols = c(truth_om)) |>
   dplyr::mutate(
     truth_value = ceiling(truth_value * biomass_scalar / weight_scalar),
@@ -279,7 +288,7 @@ natural_mortality_agecomp_om <- truth_om |>
     truth_label == "natural_mortality",
     truth_type == "agecomp",
     truth_time_step == "yearly"
-  ) |> 
+  ) |>
   tidyr::unnest(cols = c(truth_om))
 
 average_natural_mortality_agecomp_om <- natural_mortality_agecomp_om |>
@@ -295,7 +304,7 @@ fishing_mortality_agecomp_om <- truth_om |>
     truth_label == "fishing_mortality",
     truth_type == "agecomp",
     truth_time_step == "yearly"
-  ) |> 
+  ) |>
   tidyr::unnest(cols = c(truth_om))
 
 # Option 1: Estimate time-varying selectivity from fishing mortality-at-age
@@ -306,7 +315,7 @@ catch_selectivity <- ecosystemom::estimate_true_selectivity(
 ) |>
   dplyr::mutate(fleet_name = fishing_fleet_name)
 
-# Option 2: time-invariant double-logistic selectivity 
+# Option 2: time-invariant double-logistic selectivity
 catch_selectivity_inflection_point_asc <- 1.4
 catch_selectivity_slope_asc <- 4.0
 catch_selectivity_inflection_point_desc <- 3.5
@@ -332,27 +341,27 @@ fishing_mortality_index_om <- truth_om |>
 catch_index_sampled <- catch_index_om |>
   dplyr::mutate(
     sampled_value = ecosystemom::sample_lognormal(
-      x = truth_value, 
+      x = truth_value,
       sd = catch_index_sd
     )
   )
 
 # Catch age composition (multinomial sampling)
-catch_agecomp_sampled <- catch_agecomp_om |> 
-  dplyr::group_by(truth_year) |> 
+catch_agecomp_sampled <- catch_agecomp_om |>
+  dplyr::group_by(truth_year) |>
   dplyr::mutate(
     sampled_value = ecosystemom::sample_multinomial(
       x = truth_value,
       sample_size = catch_agecomp_sample_size
     )
-  ) |> 
+  ) |>
   dplyr::ungroup()
 
 # Create survey
 survey_data <- number_agecomp_om |>
   dplyr::left_join(
     weight_agecomp_om |>
-      dplyr::select(-species_name, -truth_label, -truth_type, -truth_time_step, -truth_unit), 
+      dplyr::select(-species_name, -truth_label, -truth_type, -truth_time_step, -truth_unit),
     by = c("truth_year", "truth_group"),
     suffix = c("_number", "_weight")
   ) |>
@@ -363,7 +372,7 @@ survey_data <- number_agecomp_om |>
   )
 
 # Survey index
-survey_index_sampled <- survey_data |> 
+survey_index_sampled <- survey_data |>
   dplyr::select(
     -truth_value_number, -truth_value_weight, -selectivity, -truth_value_selected_number
   ) |>
@@ -386,20 +395,20 @@ survey_index_sampled <- survey_data |>
   ) |>
   dplyr::mutate(
     sampled_value = ecosystemom::sample_lognormal(
-      x = truth_value, 
+      x = truth_value,
       sd = survey_index_sd
     )
   )
 
 # Survey agecomp
-survey_agecomp_sampled <- survey_data |> 
-  dplyr::group_by(truth_year) |> 
+survey_agecomp_sampled <- survey_data |>
+  dplyr::group_by(truth_year) |>
   dplyr::mutate(
     sampled_value = ecosystemom::sample_multinomial(
       x = truth_value_selected_number,
       sample_size = survey_agecomp_sample_size
     )
-  ) |> 
+  ) |>
   dplyr::ungroup() |>
   dplyr::select(
     -truth_value_number, -truth_value_weight, -selectivity,
@@ -441,14 +450,14 @@ estimates_fims <- FIMS::get_estimates(fit_fims) |>
     )
   ) |>
   dplyr::left_join(
-    year_lookup, 
+    year_lookup,
     by = c("year_i")
   ) |>
   dplyr::mutate(
     uncertainty_label = "se",
     estimate = estimated,
     age = age_i
-  ) 
+  )
 
 FIMS::clear()
 
@@ -456,13 +465,13 @@ estimates_fims |>
   dplyr::filter(estimation_type == "fixed_effects" | estimation_type == "random_effects") |>
   dplyr::select(module_name, label, fleet, year_i, age_i, input, estimated, uncertainty) |>
   print(n = Inf)
-  
+
 # Compare OM and FIMS
 shared_scales <- list(
   ggplot2::scale_linetype_manual(
     name = "Model",
     labels = c("EM", "OM"),
-    values = c("solid", "dashed") 
+    values = c("solid", "dashed")
   ),
   ggplot2::scale_color_manual(
     name = "Model",
@@ -498,7 +507,7 @@ stockplotr::plot_timeseries(
 ) +
   stockplotr::theme_noaa() +
   ggplot2::geom_line(
-    data = biomass_om, 
+    data = biomass_om,
     ggplot2::aes(x = year, y = OM, color = "OM"),
     linetype = "dashed"
   ) +
@@ -528,7 +537,7 @@ stockplotr::plot_timeseries(
 ) +
   stockplotr::theme_noaa() +
   ggplot2::geom_line(
-    data = recruitment_om, 
+    data = recruitment_om,
     ggplot2::aes(x = year, y = OM, color = "OM"),
     linetype = "dashed"
   ) +
@@ -540,7 +549,7 @@ f_om <- fishing_mortality_index_om |>
   dplyr::mutate(OM = log(OM))
 
 f_em <- stockplotr::filter_data(
-    estimates_fims |> 
+    estimates_fims |>
       dplyr::filter(module_id == 1),
     label_name = "log_Fmort$",
     geom = "line"
@@ -555,14 +564,14 @@ stockplotr::plot_timeseries(
 ) +
   stockplotr::theme_noaa() +
   ggplot2::geom_line(
-    data = f_om, 
+    data = f_om,
     ggplot2::aes(x = year, y = OM, color = "OM"),
     linetype = "dashed"
   ) +
   ggplot2::scale_linetype_manual(
     name = "Model",
     labels = c("EM", "OM"),
-    values = c("solid", "dashed") 
+    values = c("solid", "dashed")
   ) +
   ggplot2::scale_color_manual(
     name = "Model",
@@ -581,7 +590,7 @@ shared_scales <- list(
   ),
   ggplot2::guides(
     color = ggplot2::guide_legend(
-      override.aes = list( 
+      override.aes = list(
         shape = c(NA, 16),          # No dot for estimate, circle (16) for Observed
         linetype = c("solid", "blank") # Solid line for estimate, no line for Observed
       )
@@ -689,7 +698,7 @@ ggplot2::ggsave(
 )
 
 plot_index_comparison(
-  survey_index_sampled, 
+  survey_index_sampled,
   file_path = figures_path,
   "Survey Biomass Index"
 )
@@ -736,11 +745,11 @@ plot_age_comp_normalized(
   title = "Catch Age Composition"
 )
 plot_weight_trends(
-  weight_agecomp_om, 
+  weight_agecomp_om,
   file_path = figures_path
 )
 plot_survey_vs_catch(
-  survey_index_sampled, 
+  survey_index_sampled,
   catch_index_sampled,
   file_path = figures_path
 )

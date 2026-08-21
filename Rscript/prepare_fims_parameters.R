@@ -1,16 +1,36 @@
 # Generate default FIMS model configurations
-configurations <- FIMS::create_default_configurations(
-  data = data_fims
-) |>
+#this is causing an error so trying something different below
+# configurations <- FIMS::create_default_configurations(
+#   data = data_fims
+# ) |>
+#   tidyr::unnest(cols = data) |>
+#   dplyr::rows_update(
+#     tibble::tibble(
+#       fleet = c(fishing_fleet_name, yoy_fleet_name, survey_fleet_name),
+#       module_name = "Selectivity",
+#       module_type = "DoubleLogistic"
+#     ),
+#     by = c("module_name", "fleet")
+#   )
+
+# Step 1: Create unnested base configuration table
+config_df <- FIMS::create_default_configurations(data = data_fims) |>
   tidyr::unnest(cols = data) |>
-  dplyr::rows_update(
-    y = tibble::tibble(
-      fleet_name = c(fishing_fleet_name, survey_fleet_name),
-      module_name = "Selectivity",
-      module_type = "DoubleLogistic"
-    ),
-    by = c("module_name", "fleet_name")
-  )
+  as.data.frame() # Ensures standard data frame/tibble structure
+
+# Step 2: Define update table
+updates <- tibble::tibble(
+  fleet = c(fishing_fleet_name, yoy_fleet_name, survey_fleet_name),
+  module_name = "Selectivity",
+  module_type = "DoubleLogistic"
+)
+
+# Step 3: Perform rows_update explicitly
+configurations <- dplyr::rows_update(
+  x = config_df,
+  y = updates,
+  by = c("module_name", "fleet")
+)
 
 # Estimate maturity parameters
 # TODO: check spawning proportion from EwE
@@ -38,64 +58,37 @@ parameters <- FIMS::create_default_parameters(
   tidyr::unnest(cols = data) |>
   dplyr::rows_update(
     y = tibble::tibble(
-      fleet_name = fishing_fleet_name,
+      fleet = fishing_fleet_name,
         label = c("inflection_point_asc", "slope_asc", "inflection_point_desc", "slope_desc"),
         estimation_type = c(
           rep("fixed_effects", 2),
           rep("constant", 2)
         ),
         value = c(
-          catch_selectivity_inflection_point_asc, 
-          catch_selectivity_slope_asc, 
-          catch_selectivity_inflection_point_desc, 
+          catch_selectivity_inflection_point_asc,
+          catch_selectivity_slope_asc,
+          catch_selectivity_inflection_point_desc,
           catch_selectivity_slope_desc
         )
-      ), by = c("fleet_name", "label")
-  ) |>
-    # dplyr::rows_update(
-    #   y = tibble::tibble(
-    #     fleet_name = fishing_fleet_name,
-    #     module_type = "Logistic",
-    #     label = c("inflection_point", "slope"),
-    #     estimation_type = c(
-    #       rep("fixed_effects", 2)
-    #     ),
-    #     value = c(1.4, 4.0)
-    #   ), by = c("fleet_name", "label")
-    # ) |>
-  # dplyr::filter(!(module_name == "Selectivity" & fleet_name == fishing_fleet_name)) |>
-  # dplyr::bind_rows(catch_selectivity) |> 
-  # dplyr::rows_update(
-  #   y = tibble::tibble(
-  #     fleet_name = fishing_fleet_name,
-  #     estimation_type = c(
-  #       rep("fixed_effects", 0),
-  #       rep("constant", 4)
-  #     ),
-  #     label = c(
-  #       "inflection_point_asc", "slope_asc", 
-  #       "inflection_point_desc", "slope_desc"
-  #     )
-  #   ),
-  #   by = c("fleet_name", "label")
-  # ) |>
+      ), by = c("fleet", "label")
+  )
   dplyr::rows_update(
     y = tibble::tibble(
-      fleet_name = fishing_fleet_name,
+      fleet = fishing_fleet_name,
       label = "log_Fmort",
       time = fishing_mortality_index_om[["truth_year"]],
       # estimation_type = "constant",
       value = fishing_mortality_index_om[["truth_value"]] |>
         log()
-    ), 
-    by = c("fleet_name", "label", "time")
-  ) |> 
+    ),
+    by = c("fleet", "label", "time")
+  ) |>
   dplyr::rows_update(
     y = tibble::tibble(
-      fleet_name = survey_fleet_name,
+      fleet = survey_fleet_name,
       label = c(
-        "inflection_point_asc", "slope_asc", 
-        "inflection_point_desc", "slope_desc", 
+        "inflection_point_asc", "slope_asc",
+        "inflection_point_desc", "slope_desc",
         "log_q"
       ),
       estimation_type = c(
@@ -110,31 +103,31 @@ parameters <- FIMS::create_default_parameters(
         log(catchability_survey)
       )
     ),
-    by = c("fleet_name", "label")
-  ) |>
-  # dplyr::rows_update(
-  #   y = tibble::tibble(
-  #     fleet_name = survey_fleet_name,
-  #     label = c(
-  #       "inflection_point", "slope", 
-  #       "log_q"
-  #     ),
-  #     estimation_type = c(
-  #       rep("fixed_effects", 1),
-  #       rep("constant", 1),
-  #       rep("fixed_effects", 1)
-  #     ),
-  #     value = c(
-  #       selectivity_inflection_point_survey,
-  #       selectivity_slope_survey,
-  #       log(catchability_survey)
-  #     )
-  #   ),
-  #   by = c("fleet_name", "label")
-  # ) |>
+    by = c("fleet", "label")
+  )  |>
+    dplyr::rows_update(
+      y = tibble::tibble(
+        fleet = yoy_fleet_name,
+        label = c("inflection_point_asc", "slope_asc",
+                  "inflection_point_desc", "slope_desc",
+                  "log_q"),
+        estimation_type = c(
+          rep("constant", 4),
+          rep("fixed_effects", 1)
+        ),
+        value = c(
+          yoy_inflection_point_asc,
+          yoy_slope_asc,
+          yoy_inflection_point_desc,
+          yoy_slope_desc,
+          log(yoy_q)
+        )
+      ),
+      by = c("fleet", "label")
+    ) |>
   dplyr::rows_update(
     y = tibble::tibble(
-      label = "log_rzero", 
+      label = "log_rzero",
       module_type = "BevertonHolt",
       value = number_agecomp_om |>
         dplyr::filter(truth_group == "0yr") |>
@@ -149,7 +142,7 @@ parameters <- FIMS::create_default_parameters(
   # TODO: check vulnerability matrix to get steepness
   dplyr::rows_update(
     y = tibble::tibble(
-      label = "logit_steep", 
+      label = "logit_steep",
       module_type = "BevertonHolt",
       # estimation_type = "fixed_effects",
       # estimate steepness from biomass and recruitment:
@@ -186,10 +179,10 @@ parameters <- FIMS::create_default_parameters(
   dplyr::bind_rows(maturity_parameters) |>
   dplyr::rows_update(
     y = tibble::tibble(
-      label = "log_M", 
+      label = "log_M",
       age = unname(ages[natural_mortality_agecomp_om[["truth_group"]]]),
       time = natural_mortality_agecomp_om[["truth_year"]],
-      value = log(natural_mortality_agecomp_om[["truth_value"]] - 0.2) 
+      value = log(natural_mortality_agecomp_om[["truth_value"]] - 0.2)
     ),
     by = c("label", "age", "time")
   ) |>
