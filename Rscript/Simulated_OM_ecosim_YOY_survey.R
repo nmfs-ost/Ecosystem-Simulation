@@ -7,7 +7,7 @@
 # if (!requireNamespace("pak", quietly = TRUE)) {
 #   install.packages("pak")
 # }
-#
+
 # # Required packages
 # required_packages <- c(
 #   "fs",
@@ -22,7 +22,7 @@
 #   "nmfs-ost/stockplotr",
 #   "purrr"
 # )
-#
+
 # # Install required packages
 # pak::pkg_install(required_packages, ask = FALSE)
 # library(FIMS)
