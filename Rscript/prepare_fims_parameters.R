@@ -12,34 +12,14 @@ selectivity_fishing_fleet <- selectivity_temp |>
       fleet = fishing_fleet_name,
       label = c("inflection_point_asc", "slope_asc", "inflection_point_desc", "slope_desc"),
       estimation_type = c(
-        rep("fixed_effects", 2),
-        rep("constant", 2)
+        rep("fixed_effects", 4),
+        rep("constant", 0)
       ),
       value = c(
         catch_selectivity_inflection_point_asc,
         catch_selectivity_slope_asc,
         catch_selectivity_inflection_point_desc,
         catch_selectivity_slope_desc
-      )
-    ),
-    by = c("fleet", "label")
-  )
-
-selectivity_survey_fleet <- selectivity_temp |>
-  dplyr::mutate(fleet = survey_fleet_name) |>
-  dplyr::rows_update(
-    y = tibble::tibble(
-      fleet = survey_fleet_name,
-      label = c("inflection_point_asc", "slope_asc", "inflection_point_desc", "slope_desc"),
-      estimation_type = c(
-        rep("fixed_effects", 2),
-        rep("constant", 2)
-      ),
-      value = c(
-        selectivity_inflection_point_asc_survey,
-        selectivity_slope_asc_survey,
-        selectivity_inflection_point_desc_survey,
-        selectivity_slope_desc_survey
       )
     ),
     by = c("fleet", "label")
@@ -62,11 +42,26 @@ selectivity_yoy_fleet <- selectivity_temp |>
     by = c("fleet", "label")
   )
 
+selectivity_survey_fleet <- FIMS::setup_default_Selectivity(
+  data = data_fims,
+  fleet = survey_fleet_name,
+  module_type = "Logistic"
+) |>
+  dplyr::rows_update(
+    y = tibble::tibble(
+      fleet = survey_fleet_name,
+      label = c("inflection_point", "slope"),
+      value = c(
+        selectivity_inflection_point,
+        selectivity_slope
+      )
+    ),
+    by = c("fleet", "label")
+  )
 # Estimate maturity parameters
 # TODO: check spawning proportion from EwE
 maturity_parameters <- ecosystemom::estimate_true_maturity(
   ages = ages,
-  # spawning_proportion = c(0, 0.1, 0.5, 0.9, 1),
   spawning_proportion = c(0, 0, 0, 1, 1),
   functional_form = "logistic"
 )
@@ -78,7 +73,6 @@ recruitment_ewe <- number_agecomp_om |>
 
 log_sd_proxy <- (sd(log(recruitment_ewe) - mean(log(recruitment_ewe)))) |>
   log()
-# log_sd_proxy <- log(0.5)
 
 # Create default parameter values from the updated model configuration
 parameters <- FIMS::setup_default_parameters(data = data_fims) |>
@@ -90,8 +84,8 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
     ) & module_name == "Selectivity")
   ) |>
   dplyr::bind_rows(
-    selectivity_fishing_fleet, 
-    selectivity_survey_fleet, 
+    selectivity_fishing_fleet,
+    selectivity_survey_fleet,
     selectivity_yoy_fleet
   ) |>
   dplyr::rows_update(
@@ -99,8 +93,7 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
       fleet = fishing_fleet_name,
       label = "log_Fmort",
       timing = fishing_mortality_index_om[["truth_year"]],
-      # estimation_type = "constant",
-      value = fishing_mortality_index_om[["truth_value"]] |>
+      value = new_fishing_mortality_index_om[["truth_value"]] |>
         log()
     ),
     by = c("fleet", "label", "timing")
@@ -114,15 +107,15 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
     ),
     by = c("fleet", "label")
   )  |>
-    dplyr::rows_update(
-      y = tibble::tibble(
-        fleet = yoy_fleet_name,
-        label = "log_q",
-        estimation_type = "fixed_effects",
-        value = log(yoy_q)
-      ),
-      by = c("fleet", "label")
-    ) |>
+  dplyr::rows_update(
+    y = tibble::tibble(
+      fleet = yoy_fleet_name,
+      label = "log_q",
+      estimation_type = "fixed_effects",
+      value = log(yoy_q)
+    ),
+    by = c("fleet", "label")
+  ) |>
   dplyr::rows_update(
     y = tibble::tibble(
       label = "log_rzero",
@@ -131,9 +124,6 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
         dplyr::filter(truth_group == "0yr") |>
         dplyr::pull(truth_value) |>
         (\(x) mean(log(x)))()
-        # dplyr::filter(truth_group  == "0yr", truth_year == years[1]) |>
-        # dplyr::pull(truth_value) |>
-        # log()
     ),
     by = c("label", "module_type")
   ) |>
@@ -180,7 +170,8 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
       label = "log_M",
       age = unname(ages[natural_mortality_agecomp_om[["truth_group"]]]),
       timing = natural_mortality_agecomp_om[["truth_year"]],
-      value = log(natural_mortality_agecomp_om[["truth_value"]] - 0.2)
+      # value = log(natural_mortality_agecomp_om[["truth_value"]])
+      value = log(new_mortality_agecomp_om[["truth_value_natural_mortality"]])
     ),
     by = c("label", "age", "timing")
   ) |>
@@ -192,8 +183,8 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
         dplyr::pull(truth_group) |>
         (\(x) unname(ages[x]))(),
       estimation_type = c(
-        rep("fixed_effects", 3),
-        rep("constant", 2)
+        rep("fixed_effects", 4),
+        rep("constant", 1)
       ),
       value = number_agecomp_om |>
         dplyr::filter(truth_year == years[1]) |>
@@ -203,3 +194,12 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
     by = c("label", "age")
   )
 
+# If label == log_devs, change estimation_type to be fixed_effects
+parameters_fixed_effects_logdevs <- parameters |>
+  dplyr::mutate(
+    estimation_type = dplyr::if_else(
+      label == "log_devs",
+      "fixed_effects",
+      estimation_type
+    )
+  )
