@@ -59,7 +59,7 @@ ages <- 0:4
 fishing_fleet_name <- "fishing_fleet"
 # Define the uncertainty of sampled catch observations
 catch_index_sd <- 0.05
-catch_agecomp_sample_size <- 20
+catch_agecomp_sample_size <- 120
 
 # Define survey fleet for ages 1-4+
 # Define fleet name
@@ -67,27 +67,21 @@ survey_fleet_name <- "survey_fleet"
 # TODO:
 # - Define realistic catchability and selectivity patterns
 # Define survey catchability
-catchability_survey <- 0.01
+catchability_survey <- 0.05
 
 # Survey selectivity: Double logistic selectivity
-selectivity_inflection_point_asc_survey <- -2
-selectivity_slope_asc_survey <- 10
-selectivity_inflection_point_desc_survey <- 1.5
-selectivity_slope_desc_survey <- 2.0
+selectivity_inflection_point <- 1.2
+selectivity_slope <- 2.5
 
-selectivity_module_survey <- methods::new(FIMS::DoubleLogisticSelectivity)
-selectivity_module_survey$inflection_point_asc[1]$value <- selectivity_inflection_point_asc_survey
-selectivity_module_survey$slope_asc[1]$value <- selectivity_slope_asc_survey
-selectivity_module_survey$inflection_point_desc[1]$value <- selectivity_inflection_point_desc_survey
-selectivity_module_survey$slope_desc[1]$value <- selectivity_slope_desc_survey
-
+selectivity_module_survey <- methods::new(FIMS::LogisticSelectivity)
+selectivity_module_survey$inflection_point[1]$value <- selectivity_inflection_point
+selectivity_module_survey$slope[1]$value <- selectivity_slope
 selectivity_survey <- purrr::map_dbl(ages, ~selectivity_module_survey$evaluate(.x))
 FIMS::clear()
 
 # Define the uncertainty of sampled survey observations
 survey_index_sd <- 0.1
-survey_agecomp_sample_size <- 20
-
+survey_agecomp_sample_size <- 120
 
 #### ----------Initializing input files and directories ####
 
@@ -214,7 +208,7 @@ weight_agecomp_om <- truth_om |>
   # TODO: double check unit of weight
   dplyr::mutate(
     truth_value = truth_value * weight_scalar,
-    truth_unit == "mt"
+    truth_unit = "mt"
   )
 
 average_weight_agecomp_om <- weight_agecomp_om |>
@@ -283,13 +277,6 @@ natural_mortality_agecomp_om <- truth_om |>
   ) |>
   tidyr::unnest(cols = c(truth_om))
 
-average_natural_mortality_agecomp_om <- natural_mortality_agecomp_om |>
-  dplyr::group_by(species_name, truth_group) |>
-  dplyr::summarise(
-    avg_M = mean(truth_value, na.rm = TRUE),
-    .groups = "drop"
-  )
-
 # Extract and unnest annual fishing mortality by age
 fishing_mortality_agecomp_om <- truth_om |>
   dplyr::filter(
@@ -298,6 +285,46 @@ fishing_mortality_agecomp_om <- truth_om |>
     truth_time_step == "yearly"
   ) |>
   tidyr::unnest(cols = c(truth_om))
+
+new_mortality_agecomp_om <- truth_om |>
+  dplyr::filter(
+    truth_label == "total_mortality",
+    truth_type == "agecomp",
+    truth_time_step == "yearly"
+  ) |>
+  tidyr::unnest(cols = c(truth_om)) |>
+  dplyr::left_join(
+    fishing_mortality_agecomp_om, 
+    by = c("truth_year", "truth_group"), 
+    suffix = c("_total", "_fishing")) |>
+  dplyr::mutate(
+    expansion_factor = truth_value_total / (1 - exp(-truth_value_total))
+  ) |>
+  dplyr::mutate(
+    truth_value_fishing_mortality = truth_value_fishing * expansion_factor,
+    truth_value_natural_mortality = truth_value_total - truth_value_fishing_mortality
+  )
+
+  new_fishing_mortality_index_om <- new_mortality_agecomp_om |>
+    dplyr::group_by(truth_year) |>
+    dplyr::summarise(
+      truth_value = max(truth_value_fishing_mortality, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      species_name = "Menhaden",
+      truth_label = "fishing_mortality",
+      truth_type = "index",
+      truth_time_step = "yearly",
+      truth_unit = "year^-1"
+    )
+
+average_natural_mortality_agecomp_om <- natural_mortality_agecomp_om |>
+  dplyr::group_by(species_name, truth_group) |>
+  dplyr::summarise(
+    avg_M = mean(truth_value, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 # Option 1: Estimate time-varying selectivity from fishing mortality-at-age
 catch_selectivity <- ecosystemom::estimate_true_selectivity(
@@ -309,9 +336,9 @@ catch_selectivity <- ecosystemom::estimate_true_selectivity(
 
 # Option 2: time-invariant double-logistic selectivity
 catch_selectivity_inflection_point_asc <- 1.4
-catch_selectivity_slope_asc <- 4.0
-catch_selectivity_inflection_point_desc <- 3.5
-catch_selectivity_slope_desc <- 2.5
+catch_selectivity_slope_asc <- 3.5
+catch_selectivity_inflection_point_desc <- 3.2
+catch_selectivity_slope_desc <- 1.8
 
 selectivity_ascending  <- 1 / (1 + exp(-catch_selectivity_slope_asc * (ages - catch_selectivity_inflection_point_asc)))
 selectivity_descending <- 1 / (1 + exp(-catch_selectivity_slope_desc * (ages - catch_selectivity_inflection_point_desc)))
@@ -457,6 +484,18 @@ source(file.path("Rscript", "prepare_fims_data.R"))
 source(file.path("Rscript", "prepare_fims_parameters.R"))
 
 # Initialize and fit the FIMS estimation model
+fit_fims_fixed_effects_logdevs <- parameters_fixed_effects_logdevs |>
+  FIMS::initialize_fims((data = data_fims)) |>
+  FIMS::fit_fims(
+    optimize = TRUE,
+    control = list(
+      eval.max = 50000,
+      iter.max = 30000,
+      trace = 0
+    )
+  )
+FIMS::clear()
+
 fit_fims <- parameters |>
   FIMS::initialize_fims((data = data_fims)) |>
   FIMS::fit_fims(
@@ -464,12 +503,10 @@ fit_fims <- parameters |>
     control = list(
       eval.max = 50000,
       iter.max = 30000,
-      # rel.tol  = 1e-12,
-      # sing.tol = 1e-12,
       trace = 0
     )
   )
-fit_fims@obj$gr(fit_fims@opt$par)
+
 # Extract estimates
 year_lookup <- data.frame(
   year_i = 1:(length(years) + 1),
@@ -477,14 +514,6 @@ year_lookup <- data.frame(
 )
 
 estimates_fims <- FIMS::get_estimates(fit_fims) |>
-  # Multiply estimated fishing mortality by max selectivity
-  dplyr::mutate(
-    estimated = dplyr::if_else(
-      label == "log_Fmort" & module_id == 1,
-      log(exp(estimated) * s_max_fims),
-      estimated # Leaves all other rows exactly as they were
-    )
-  ) |>
   dplyr::left_join(
     year_lookup,
     by = c("year_i")
@@ -495,11 +524,39 @@ estimates_fims <- FIMS::get_estimates(fit_fims) |>
     age = age_i
   )
 
+asc_ip  <- estimates_fims |>
+  dplyr::filter(module_id == 1, label == "inflection_point_asc") |> 
+  dplyr::pull(estimated)
+asc_s   <- estimates_fims |>
+  dplyr::filter(module_id == 1, label == "slope_asc") |>
+  dplyr::pull(estimated)
+desc_ip <- estimates_fims |>
+  dplyr::filter(module_id == 1, label == "inflection_point_desc") |> 
+  dplyr::pull(estimated)
+desc_s  <- estimates_fims |>
+  dplyr::filter(module_id == 1, label == "slope_desc") |> 
+  dplyr::pull(estimated)
+
+# Compute true peak max across ages
+fine_ages <- seq(0, 4, by = 1)
+s_asc     <- 1 / (1 + exp(-asc_s * (fine_ages - asc_ip)))
+s_desc    <- 1 / (1 + exp(-desc_s * (fine_ages - desc_ip)))
+s_max_estimated <- max(s_asc * (1 - s_desc))
+
+estimates_fims <- estimates_fims |>
+  # Multiply estimated fishing mortality by max selectivity
+  dplyr::mutate(
+    estimate = dplyr::if_else(
+      label == "log_Fmort" & module_id == 1,
+      log(exp(estimate) * s_max_estimated),
+      estimate
+    )
+  )
 FIMS::clear()
 
 estimates_fims |>
   dplyr::filter(estimation_type == "fixed_effects" | estimation_type == "random_effects") |>
-  dplyr::select(module_name, label, fleet, year_i, age_i, input, estimated, uncertainty) |>
+  dplyr::select(module_name, label, fleet, year, age_i, input, estimate, uncertainty) |>
   print(n = Inf)
 
 # Compare OM and FIMS
@@ -580,7 +637,7 @@ stockplotr::plot_timeseries(
   shared_scales
 
 # Fishing mortality
-f_om <- fishing_mortality_index_om |>
+f_om <- new_fishing_mortality_index_om |>
   dplyr::select(year = truth_year, OM = truth_value) |>
   dplyr::mutate(OM = log(OM))
 
@@ -626,7 +683,7 @@ shared_scales <- list(
   ),
   ggplot2::guides(
     color = ggplot2::guide_legend(
-      override.aes = list(
+      override.aes = list( 
         shape = c(NA, 16),          # No dot for estimate, circle (16) for Observed
         linetype = c("solid", "blank") # Solid line for estimate, no line for Observed
       )
@@ -649,30 +706,37 @@ stockplotr::plot_timeseries(
 ) +
   ggplot2::geom_point(
     data = survey_index_data,
+    ggplot2::aes(x = year, y = estimate, color = "Estimated")
+  ) +
+  ggplot2::geom_point(
+    data = survey_index_data,
     ggplot2::aes(x = year, y = observed, color = "Observed")
   ) +
   shared_scales
 
-# Landings
-landings_data <- stockplotr::filter_data(
-  estimates_fims |> dplyr::filter(module_id == 1),
-  label_name = "^landings_expected$",
-  geom = "line"
+# Catch
+catch_data <- stockplotr::filter_data(
+    estimates_fims |> dplyr::filter(module_id == 1),
+    label_name = "^catch_expected$",
+    geom = "line"
 ) |>
   dplyr::mutate(group_var = "Estimated")
 
 stockplotr::plot_timeseries(
-  landings_data,
+  catch_data,
   x = "year",
   y = "estimate",
-  ylab = "Landings (metric tons)"
+  ylab = "Catch (metric tons)"
 ) +
   ggplot2::geom_point(
-    data = landings_data,
+    data = catch_data,
+    ggplot2::aes(x = year, y = estimate, color = "Estimated")
+  ) +
+  ggplot2::geom_point(
+    data = catch_data,
     ggplot2::aes(x = year, y = observed, color = "Observed")
   ) +
   shared_scales
-
 
 #### ---------- Plot data ####
 figures_path <- file.path(getwd(), "figures", "ecosim_sefsc")
