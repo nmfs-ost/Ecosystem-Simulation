@@ -19,13 +19,11 @@
 #   "NOAA-FIMS/ecosystemom",
 #   # For generating selectivity curves
 #   "NOAA-FIMS/FIMS",
-#   "nmfs-ost/stockplotr",
 #   "purrr"
 # )
 
 # # Install required packages
 # pak::pkg_install(required_packages, ask = FALSE)
-# library(FIMS)
 
 # Load required packages
 library(ecosystemom)
@@ -286,39 +284,6 @@ fishing_mortality_agecomp_om <- truth_om |>
   ) |>
   tidyr::unnest(cols = c(truth_om))
 
-new_mortality_agecomp_om <- truth_om |>
-  dplyr::filter(
-    truth_label == "total_mortality",
-    truth_type == "agecomp",
-    truth_time_step == "yearly"
-  ) |>
-  tidyr::unnest(cols = c(truth_om)) |>
-  dplyr::left_join(
-    fishing_mortality_agecomp_om, 
-    by = c("truth_year", "truth_group"), 
-    suffix = c("_total", "_fishing")) |>
-  dplyr::mutate(
-    expansion_factor = truth_value_total / (1 - exp(-truth_value_total))
-  ) |>
-  dplyr::mutate(
-    truth_value_fishing_mortality = truth_value_fishing * expansion_factor,
-    truth_value_natural_mortality = truth_value_total - truth_value_fishing_mortality
-  )
-
-  new_fishing_mortality_index_om <- new_mortality_agecomp_om |>
-    dplyr::group_by(truth_year) |>
-    dplyr::summarise(
-      truth_value = max(truth_value_fishing_mortality, na.rm = TRUE),
-      .groups = "drop"
-    ) |>
-    dplyr::mutate(
-      species_name = "Menhaden",
-      truth_label = "fishing_mortality",
-      truth_type = "index",
-      truth_time_step = "yearly",
-      truth_unit = "year^-1"
-    )
-
 average_natural_mortality_agecomp_om <- natural_mortality_agecomp_om |>
   dplyr::group_by(species_name, truth_group) |>
   dplyr::summarise(
@@ -454,7 +419,7 @@ yoy_index_sampled <- number_agecomp_om |>
   dplyr::mutate(
     truth_value_selected_number = ceiling(truth_value_number * yoy_q),
     truth_value_selected_biomass = truth_value_selected_number * truth_value_weight,
-    sampled_value = sample_lognormal(
+    sampled_value = ecosystemom::sample_lognormal(
       x = truth_value_selected_biomass,
       sd = yoy_index_sd
     )
@@ -637,7 +602,7 @@ stockplotr::plot_timeseries(
   shared_scales
 
 # Fishing mortality
-f_om <- new_fishing_mortality_index_om |>
+f_om <- fishing_mortality_index_om |>
   dplyr::select(year = truth_year, OM = truth_value) |>
   dplyr::mutate(OM = log(OM))
 

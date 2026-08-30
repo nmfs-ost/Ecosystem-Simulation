@@ -93,7 +93,7 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
       fleet = fishing_fleet_name,
       label = "log_Fmort",
       timing = fishing_mortality_index_om[["truth_year"]],
-      value = new_fishing_mortality_index_om[["truth_value"]] |>
+      value = fishing_mortality_index_om[["truth_value"]] |>
         log()
     ),
     by = c("fleet", "label", "timing")
@@ -170,8 +170,7 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
       label = "log_M",
       age = unname(ages[natural_mortality_agecomp_om[["truth_group"]]]),
       timing = natural_mortality_agecomp_om[["truth_year"]],
-      # value = log(natural_mortality_agecomp_om[["truth_value"]])
-      value = log(new_mortality_agecomp_om[["truth_value_natural_mortality"]])
+      value = log(natural_mortality_agecomp_om[["truth_value"]])
     ),
     by = c("label", "age", "timing")
   ) |>
