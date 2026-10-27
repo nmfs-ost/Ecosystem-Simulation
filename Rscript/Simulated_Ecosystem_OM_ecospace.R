@@ -24,7 +24,6 @@ required_packages <- c(
 
 # Install required packages
 pak::pkg_install(required_packages, ask = FALSE)
-library(FIMS)
 
 # Source utility scripts
 source(file.path("Rscript", "utils.R"))
@@ -118,6 +117,8 @@ if (!dir.exists(data_destination) || length(list.files(data_destination)) == 0) 
 } else {
   message("Data already exists in ", data_destination, ". Skipping download.")
 }
+
+source(file.path("Rscript", "ecospace_to_assessment.R"))
 
 #### ---------- Get Truth ####
 
