@@ -67,7 +67,7 @@ survey_fleet_name <- "survey_fleet"
 # Define survey catchability
 catchability_survey <- 0.05
 
-# Survey selectivity: Double logistic selectivity
+# Survey selectivity: logistic selectivity
 selectivity_inflection_point <- 1.2
 selectivity_slope <- 2.5
 
@@ -183,19 +183,6 @@ catch_index_om <- truth_om |>
   )
 
 # Extract and unnest annual weight-at-age
-mean_weight_agecomp_om <- truth_om |>
-  dplyr::filter(
-    truth_label == "weight",
-    truth_type == "agecomp",
-    truth_time_step == "yearly"
-  ) |>
-  tidyr::unnest(cols = c(truth_om)) |>
-  dplyr::mutate(truth_year = NA) |>
-  dplyr::group_by(truth_group) |>
-  dplyr::mutate(truth_value = mean(truth_value, na.rm = TRUE)) |>
-  dplyr::distinct() |>
-  dplyr::ungroup()
-
 weight_agecomp_om <- truth_om |>
   dplyr::filter(
     truth_label == "weight",
@@ -207,13 +194,6 @@ weight_agecomp_om <- truth_om |>
   dplyr::mutate(
     truth_value = truth_value * weight_scalar,
     truth_unit = "mt"
-  )
-
-average_weight_agecomp_om <- weight_agecomp_om |>
-  dplyr::group_by(species_name, truth_group) |>
-  dplyr::summarise(
-    avg_weight = mean(truth_value, na.rm = TRUE),
-    .groups = "drop"
   )
 
 # Extract and unnest annual catch-at-age in numbers
@@ -475,7 +455,7 @@ fit_fims <- parameters |>
 # Extract estimates
 year_lookup <- data.frame(
   year_i = 1:(length(years) + 1),
-  year = c(years, get_end_year(data_fims) + 1)
+  year = c(years, FIMS::get_end_year(data_fims) + 1)
 )
 
 estimates_fims <- FIMS::get_estimates(fit_fims) |>
@@ -486,7 +466,7 @@ estimates_fims <- FIMS::get_estimates(fit_fims) |>
   dplyr::mutate(
     uncertainty_label = "se",
     estimate = estimated,
-    age = age_i
+    age = age
   )
 
 asc_ip  <- estimates_fims |>
@@ -521,22 +501,22 @@ FIMS::clear()
 
 estimates_fims |>
   dplyr::filter(estimation_type == "fixed_effects" | estimation_type == "random_effects") |>
-  dplyr::select(module_name, label, fleet, year, age_i, input, estimate, uncertainty) |>
+  dplyr::select(module_name, label, fleet, year, age, input, estimate, uncertainty) |>
   print(n = Inf)
 
 # Compare OM and FIMS
 shared_scales <- list(
-  ggplot2::scale_linetype_manual(
-    name = "Model",
-    labels = c("EM", "OM"),
-    values = c("solid", "dashed")
-  ),
   ggplot2::scale_color_manual(
-    name = "Model",
-    labels = c("EM", "OM"),
-    values = c(
-      "EM" = "black",
-      "OM" = "#003087"
+    name   = "Model",
+    values = c("EM" = "black", "OM" = "#003087"),
+    limits = c("EM", "OM")
+  ),
+  ggplot2::guides(
+    color = ggplot2::guide_legend(
+      override.aes = list(
+        linetype = c("solid", "dashed"),
+        color    = c("black", "#003087")
+      )
     )
   )
 )
@@ -557,11 +537,11 @@ biomass_em <- stockplotr::filter_data(
   dplyr::mutate(group_var = "EM")
 
 cbind(biomass_om$OM, biomass_em$estimated)
-stockplotr::plot_timeseries(
+biomass_comparison_figure <- stockplotr::plot_timeseries(
   biomass_em,
   x = "year",
   y = "estimate",
-  ylab = "biomass (metric ton)"
+  ylab = "Biomass (metric ton)"
 ) +
   stockplotr::theme_noaa() +
   ggplot2::geom_line(
@@ -587,11 +567,11 @@ recruitment_em <- stockplotr::filter_data(
 ) |>
   dplyr::mutate(group_var = "EM")
 
-stockplotr::plot_timeseries(
+recruitment_comparison_figure <- stockplotr::plot_timeseries(
   recruitment_em,
   x = "year",
   y = "estimate",
-  ylab = "recruitment (metric ton)"
+  ylab = "Recruits (number)"
 ) +
   stockplotr::theme_noaa() +
   ggplot2::geom_line(
@@ -614,11 +594,11 @@ f_em <- stockplotr::filter_data(
 ) |>
   dplyr::mutate(group_var = "EM")
 
-stockplotr::plot_timeseries(
+f_comparison_figure <- stockplotr::plot_timeseries(
   f_em,
   x = "year",
   y = "estimate",
-  ylab = "natural log of Fishing Mortality"
+  ylab = "Natural Log of Fishing Mortality"
 ) +
   stockplotr::theme_noaa() +
   ggplot2::geom_line(
@@ -656,6 +636,29 @@ shared_scales <- list(
   )
 )
 # Survey
+yoy_index_data <- stockplotr::filter_data(
+    estimates_fims |> dplyr::filter(module_id == 2),
+    label_name = "^index_expected$",
+    geom = "line"
+) |>
+  dplyr::mutate(group_var = "Estimated")
+
+yoy_comparison_figure <- stockplotr::plot_timeseries(
+  yoy_index_data,
+  x = "year",
+  y = "estimate",
+  ylab = "Young-of-the-Year Index"
+) +
+  ggplot2::geom_line(
+    data = yoy_index_data,
+    ggplot2::aes(x = year, y = estimate, color = "Estimated")
+  ) +
+  ggplot2::geom_point(
+    data = yoy_index_data,
+    ggplot2::aes(x = year, y = observed, color = "Observed")
+  ) +
+  shared_scales
+
 survey_index_data <- stockplotr::filter_data(
   estimates_fims |> dplyr::filter(module_id == 2),
   label_name = "^index_expected$",
@@ -663,7 +666,7 @@ survey_index_data <- stockplotr::filter_data(
 ) |>
   dplyr::mutate(group_var = "Estimated")
 
-stockplotr::plot_timeseries(
+survey_index_comparison_figure <- stockplotr::plot_timeseries(
   survey_index_data,
   x = "year",
   y = "estimate",
@@ -687,7 +690,7 @@ catch_data <- stockplotr::filter_data(
 ) |>
   dplyr::mutate(group_var = "Estimated")
 
-stockplotr::plot_timeseries(
+catch_comparison_figure <- stockplotr::plot_timeseries(
   catch_data,
   x = "year",
   y = "estimate",
@@ -706,6 +709,16 @@ stockplotr::plot_timeseries(
 #### ---------- Plot data ####
 figures_path <- file.path(getwd(), "figures", "ecosim_sefsc")
 fs::dir_create(figures_path)
+
+# save all figures above into a PDF file
+pdf(file.path(figures_path, "ecosim_state_space_figures.pdf"), width = 8, height = 6)
+print(biomass_comparison_figure)
+print(recruitment_comparison_figure)
+print(f_comparison_figure)
+print(yoy_comparison_figure)
+print(survey_index_comparison_figure)
+print(catch_comparison_figure)
+dev.off()
 
 biomass_index_figure <- ggplot2::ggplot(
   biomass_index_om,

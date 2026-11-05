@@ -25,39 +25,80 @@ selectivity_fishing_fleet <- selectivity_temp |>
     by = c("fleet", "label")
   )
 
-selectivity_yoy_fleet <- selectivity_temp |>
+# YOY for ecospace run
+selectivity_yoy_fleet <- FIMS::setup_default_Selectivity(
+  data = data_fims,
+  fleet = yoy_fleet_name,
+  module_type = "AgeSpecific"
+) |>
   dplyr::mutate(fleet = yoy_fleet_name) |>
   dplyr::rows_update(
     y = tibble::tibble(
       fleet = yoy_fleet_name,
-      label = c("inflection_point_asc", "slope_asc", "inflection_point_desc", "slope_desc"),
+      age = ages,
       estimation_type = "constant",
-      value = c(
-        yoy_inflection_point_asc,
-        yoy_slope_asc,
-        yoy_inflection_point_desc,
-        yoy_slope_desc
-      )
+      value = yoy_selectivity_value
     ),
-    by = c("fleet", "label")
+    by = c("fleet", "age")
   )
 
+# Survey selectivity parameters for Ecospace run
 selectivity_survey_fleet <- FIMS::setup_default_Selectivity(
   data = data_fims,
   fleet = survey_fleet_name,
-  module_type = "Logistic"
+  module_type = "AgeSpecific"
 ) |>
   dplyr::rows_update(
     y = tibble::tibble(
       fleet = survey_fleet_name,
-      label = c("inflection_point", "slope"),
-      value = c(
-        selectivity_inflection_point,
-        selectivity_slope
+      age = ages,
+      value = selectivity_module_survey_value,
+      estimation_type = c(
+        "constant", 
+        "fixed_effects", 
+        "constant",
+        "constant",
+        "constant"
       )
     ),
-    by = c("fleet", "label")
+    by = c("fleet", "age")
   )
+
+# # YOY for Ecosim run
+# selectivity_yoy_fleet <- selectivity_temp |>
+#   dplyr::mutate(fleet = yoy_fleet_name) |>
+#   dplyr::rows_update(
+#     y = tibble::tibble(
+#       fleet = yoy_fleet_name,
+#       label = c("inflection_point_asc", "slope_asc", "inflection_point_desc", "slope_desc"),
+#       estimation_type = "constant",
+#       value = c(
+#         yoy_inflection_point_asc,
+#         yoy_slope_asc,
+#         yoy_inflection_point_desc,
+#         yoy_slope_desc
+#       )
+#     ),
+#     by = c("fleet", "label")
+#   )
+# # Survey selectivity parameters for Ecosim run
+# selectivity_survey_fleet <- FIMS::setup_default_Selectivity(
+#   data = data_fims,
+#   fleet = survey_fleet_name,
+#   module_type = "Logistic"
+# ) |>
+#   dplyr::rows_update(
+#     y = tibble::tibble(
+#       fleet = survey_fleet_name,
+#       label = c("inflection_point", "slope"),
+#       value = c(
+#         selectivity_inflection_point,
+#         selectivity_slope
+#       )
+#     ),
+#     by = c("fleet", "label")
+#   )
+
 # Estimate maturity parameters
 # TODO: check spawning proportion from EwE
 maturity_parameters <- ecosystemom::estimate_true_maturity(
@@ -170,7 +211,12 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
       label = "log_M",
       age = unname(ages[natural_mortality_agecomp_om[["truth_group"]]]),
       timing = natural_mortality_agecomp_om[["truth_year"]],
-      value = log(natural_mortality_agecomp_om[["truth_value"]])
+      # value = log(natural_mortality_agecomp_om[["truth_value"]] + 0.2)
+      value = log(dplyr::if_else(
+        natural_mortality_agecomp_om[["truth_value"]] == 0,
+        0.0001,
+        natural_mortality_agecomp_om[["truth_value"]]
+      ))
     ),
     by = c("label", "age", "timing")
   ) |>
@@ -202,3 +248,4 @@ parameters_fixed_effects_logdevs <- parameters |>
       estimation_type
     )
   )
+
