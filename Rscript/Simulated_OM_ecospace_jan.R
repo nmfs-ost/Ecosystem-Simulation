@@ -400,10 +400,10 @@ catch_selectivity <- ecosystemom::estimate_true_selectivity(
   dplyr::mutate(fleet_name = fishing_fleet_name)
 
 # Option 2: time-invariant double-logistic selectivity
-catch_selectivity_inflection_point_asc <- 1.0
-catch_selectivity_slope_asc <- 2.7
-catch_selectivity_inflection_point_desc <- 2.6
-catch_selectivity_slope_desc <- 2.2
+catch_selectivity_inflection_point_asc <- 0.95
+catch_selectivity_slope_asc <- 0.38
+catch_selectivity_inflection_point_desc <- 2.65
+catch_selectivity_slope_desc <- 0.45
 
 selectivity_ascending  <- 1 / (1 + exp(-catch_selectivity_slope_asc * (ages - catch_selectivity_inflection_point_asc)))
 selectivity_descending <- 1 / (1 + exp(-catch_selectivity_slope_desc * (ages - catch_selectivity_inflection_point_desc)))
