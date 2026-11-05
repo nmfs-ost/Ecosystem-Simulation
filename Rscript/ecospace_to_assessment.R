@@ -3,7 +3,9 @@
 ##
 ## Turn Ecospace multi-stanza output into stock-assessment "truth":
 ##   1. Reconcile RegionAgeStructure (*_All_Weight / *_All_Number) with the
-##      Ecospace annual biomass and catch files
+##      Ecospace annual biomass and catch files; also compare reported annual
+##      biomass with the mean of Ecospace monthly biomass (not an independent
+##      numbers x weight reconstruction)
 ##   2. Numbers-at-age and weight-at-age (start of year)
 ##   3. F-at-age (catch / biomass), Z-at-age (cohort decline), M = Z - F
 ##   4. Catch-at-age in numbers (Baranov) as a closure check against catch
@@ -157,16 +159,29 @@ if (length(f_bio_m)) {
   bio_m <- read.csv(f_bio_m[1], check.names = FALSE) |>
     pivot_longer(-TimeStep, names_to = "stanza", values_to = "Bmonth") |>
     filter(stanza %in% stanzas)
+  ## Average time records, not the monthly-age columns in RegionAgeStructure.
+  bio_monthly_annual <- bio_m |>
+    mutate(Year = (TimeStep - 1) %/% steps_yr + 1) |>
+    group_by(Year, stanza) |>
+    summarise(n_months = n_distinct(TimeStep),
+              B_monthly_mean = if (n() == steps_yr && n_months == steps_yr &&
+                                    all(is.finite(Bmonth))) mean(Bmonth) else NA_real_,
+              .groups = "drop")
   recon <- recon |>
     left_join(bio_m, by = c("Timestep" = "TimeStep", "stanza")) |>
-    mutate(ratio_month = Bmonth / B_snapshot)
+    left_join(bio_monthly_annual, by = c("Year", "stanza")) |>
+    mutate(ratio_month = Bmonth / B_snapshot,
+           ratio_monthly_mean = Bavg / B_monthly_mean)
+  if (any(is.na(recon$B_monthly_mean)))
+    warning("Monthly Ecospace biomass is missing, duplicated, incomplete, or non-finite ",
+            "for some year-stanzas; their B_monthly_mean is NA.")
 }
 recon <- mutate(recon, stanza = factor(stanza, levels = stanzas))
 
 print(recon |> group_by(stanza) |>
-        summarise(across(any_of(c("ratio", "ratio_month")),
+        summarise(across(any_of(c("ratio", "ratio_month", "ratio_monthly_mean")),
                          list(mean = mean, max_dev = ~ max(abs(.x - 1)))),
-                  .groups = "drop"))
+                  .groups = "drop"), width = Inf)
 
 ## ---- 2. Numbers- and weight-at-age (start of year) ----------------------------------
 ages <- ages |> mutate(age = pmin(age_m %/% 12, plus_age))
@@ -402,10 +417,11 @@ recon_fig <- function(eco_col, eco_label, subtitle, caption = NULL) {
     theme_ms() + guides(colour = guide_legend(nrow = 1))
 }
 
-## Combined figure (original file name): both Ecospace comparisons on one plot
+## Combined figure: monthly-output mean is not an age-structure reconstruction.
 recon_cols <- c(`Ecospace annual-average biomass` = "Bavg",
                 `Ecospace biomass, same time step` = "Bmonth",
-                `Sum of weight x number (age-structure file)` = "B_snapshot")
+                `Sum of weight x number (age-structure file)` = "B_snapshot",
+                `Annual mean of Ecospace monthly biomass` = "B_monthly_mean")
 recon_cols <- recon_cols[recon_cols %in% names(recon)]
 recon_all <- recon |>
   transmute(cal_year, stanza = stanza_lab(as.character(stanza)), !!!rlang::syms(recon_cols)) |>
@@ -415,11 +431,14 @@ plots$reconciliation <- ggplot(recon_all, aes(cal_year, value, colour = series, 
   geom_line(linewidth = 0.7) +
   facet_wrap(~stanza, scales = "free_y", ncol = 3) +
   scale_colour_manual(values = pal_cat[seq_along(recon_cols)], name = NULL) +
-  scale_linetype_manual(values = c("solid", "42", "12")[seq_along(recon_cols)], name = NULL) +
+  scale_linetype_manual(values = c("solid", "42", "12", "22")[seq_along(recon_cols)], name = NULL) +
   scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))) +
   yr_breaks +
   labs(title = paste(species, "age-structure output vs. Ecospace stanza biomass"),
-       subtitle = "Annual-average and same-month Ecospace biomass vs. biomass rebuilt from the January age structure",
+       subtitle = "Ecospace biomass outputs vs. biomass rebuilt from the January age structure",
+       caption = if ("B_monthly_mean" %in% names(recon))
+         paste("Monthly-biomass annual mean averages Ecospace output;",
+               "it is not an independent numbers x weight reconstruction."),
        x = NULL, y = expression("Biomass (t km"^-2*")")) +
   theme_ms() + guides(colour = guide_legend(nrow = length(recon_cols)))
 
