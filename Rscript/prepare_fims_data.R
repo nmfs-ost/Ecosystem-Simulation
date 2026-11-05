@@ -70,23 +70,39 @@ age_data <- rbind(
   )
 )
 
-weight_at_age <- data.frame(
+catch_weight_at_age <- data.frame(
   type = "weight_at_age",
   fleet = fishing_fleet_name,
-  age = unname(ages[weight_agecomp_om[["truth_group"]]]),
-  timing = weight_agecomp_om[["truth_year"]],
-  observed = weight_agecomp_om[["truth_value"]],
+  age = unname(ages[catch_weight_agecomp_om[["truth_group"]]]),
+  timing = catch_weight_agecomp_om[["truth_year"]],
+  observed = catch_weight_agecomp_om[["truth_value"]],
   unit = "mt",
   uncertainty = NA
 )
 
-weight_year_plus <- weight_at_age |>
+catch_weight_year_plus <- catch_weight_at_age |>
+  dplyr::filter(timing == max(years)) |>
+  dplyr::mutate(timing = timing + 1)
+
+population_weight_at_age <- data.frame(
+  type = "weight_at_age",
+  fleet = NA,
+  age = unname(ages[population_weight_agecomp_om[["truth_group"]]]),
+  timing = population_weight_agecomp_om[["truth_year"]],
+  observed = population_weight_agecomp_om[["truth_value"]],
+  unit = "mt",
+  uncertainty = NA
+)
+
+population_weight_year_plus <- population_weight_at_age |>
   dplyr::filter(timing == max(years)) |>
   dplyr::mutate(timing = timing + 1)
 
 weight_at_age_data <- dplyr::bind_rows(
-  weight_at_age,
-  weight_year_plus
+  catch_weight_at_age,
+  catch_weight_year_plus,
+  population_weight_at_age,
+  population_weight_year_plus
 )
 
 data_fims <- rbind(catch_data, index_data, age_data, weight_at_age_data) |>
