@@ -17,14 +17,22 @@ index_data <- rbind(
     type = "index",
     fleet = yoy_fleet_name,
     age = NA,
-    timing = years,
-    observed = yoy_index_sampled[["sampled_value"]],
+    timing = pp_years,
+    observed = pp_index_sampled[["sampled_value"]],
     unit = "mt",
     uncertainty = paste(
       "~ dlnorm(meanlog = log_index_expected, sdlog = ",
-      yoy_index_sd,
+      pp_index_sd,
       ")"
     )
+    # timing = years,
+    # observed = yoy_index_sampled[["sampled_value"]],
+    # unit = "mt",
+    # uncertainty = paste(
+    #   "~ dlnorm(meanlog = log_index_expected, sdlog = ",
+    #   yoy_index_sd,
+    #   ")"
+    # )
   ),
   data.frame(
     type = "index",

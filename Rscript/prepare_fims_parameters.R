@@ -74,6 +74,15 @@ recruitment_ewe <- number_agecomp_om |>
 log_sd_proxy <- (sd(log(recruitment_ewe) - mean(log(recruitment_ewe)))) |>
   log()
 
+# Approximate mean age-0 biomass from the OM to set a sensible starting q
+b0_mean <- mean(
+  (number_agecomp_om |> dplyr::filter(truth_group == "0yr") |> dplyr::pull(truth_value)) *
+  (weight_agecomp_om  |> dplyr::filter(truth_group == "0yr") |> dplyr::pull(truth_value))
+)
+
+# Initial catchability scalar: q ~ observed_index / selected_biomass
+pp_initial_q <- mean(pp_index_sampled[["sampled_value"]]) / b0_mean
+
 # Create default parameter values from the updated model configuration
 parameters <- FIMS::setup_default_parameters(data = data_fims) |>
   dplyr::filter(
@@ -112,7 +121,8 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
       fleet = yoy_fleet_name,
       label = "log_q",
       estimation_type = "fixed_effects",
-      value = log(yoy_q)
+      # value = log(yoy_q)
+      value = log(pp_initial_q)
     ),
     by = c("fleet", "label")
   ) |>
@@ -150,7 +160,7 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
     y = tibble::tibble(
       label = "log_sd",
       module_type = "BevertonHolt",
-      estimation_type = "fixed_effects",
+      estimation_type = "constant",
       value = log_sd_proxy
     ),
     by = c("label", "module_type")
