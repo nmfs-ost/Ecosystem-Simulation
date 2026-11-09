@@ -1,29 +1,30 @@
 # This script creates the simulated ecosystem operating model and gets the "true"
 # values from it
 
-## This version of the script includes a YOY survey
+# Set TRUE to run the operating model with egg production.
+egg_production <- TRUE
 
 #### ---------Setup, load packages ####
-# if (!requireNamespace("pak", quietly = TRUE)) {
-#   install.packages("pak")
-# }
+if (!requireNamespace("pak", quietly = TRUE)) {
+  install.packages("pak")
+}
 
-# # Required packages
-# required_packages <- c(
-#   "fs",
-#   "ggplot2",
-#   # For downloading EwE ouputs from a Google Drive folder
-#   "googledrive",
-#   "James-Thorson-NOAA/dsem",
-#   # For standardizing EwE output and simulating observations
-#   "NOAA-FIMS/ecosystemom",
-#   # For generating selectivity curves
-#   "NOAA-FIMS/FIMS",
-#   "purrr"
-# )
+# Required packages
+required_packages <- c(
+  "fs",
+  "ggplot2",
+  # For downloading EwE ouputs from a Google Drive folder
+  "googledrive",
+  "James-Thorson-NOAA/dsem",
+  # For standardizing EwE output and simulating observations
+  "NOAA-FIMS/ecosystemom",
+  # For generating selectivity curves
+  "NOAA-FIMS/FIMS",
+  "purrr"
+)
 
-# # Install required packages
-# pak::pkg_install(required_packages, ask = FALSE)
+# Install required packages
+pak::pkg_install(required_packages, ask = FALSE)
 
 # Load required packages
 library(ecosystemom)
@@ -33,6 +34,9 @@ library(fs)
 library(ggplot2)
 library(googledrive)
 library(dsem)
+
+# set random seed for reproducibility
+set.seed(123)
 
 # Source utility scripts
 source(file.path("Rscript", "utils.R"))
@@ -83,10 +87,13 @@ survey_agecomp_sample_size <- 120
 
 #### ----------Initializing input files and directories ####
 
-# Local directory for downloaded data
-data_destination <- file.path(
-  getwd(), "data", "ecosim_sefsc"
-)
+model_folder <- if (egg_production) {
+  "ecosim_egg_production_sefsc"
+} else {
+  "ecosim_sefsc"
+}
+data_destination <- file.path(getwd(), "data", model_folder)
+figures_path <- file.path(getwd(), "figures", model_folder)
 
 # Download data only if directory is missing or empty
 if (!dir.exists(data_destination) || length(list.files(data_destination)) == 0) {
@@ -97,7 +104,13 @@ if (!dir.exists(data_destination) || length(list.files(data_destination)) == 0) 
   googledrive::drive_auth(scopes = "https://www.googleapis.com/auth/drive")
 
   # Google Drive folder ID
-  ecosim_sefsc_id <- googledrive::as_id("1dDj8RzHSDyaG19N9OgPV371vdRzZY7e8")
+  ecosim_sefsc_id <- googledrive::as_id(
+    if (egg_production) {
+      "1XA4s8AamYjpI4gOOcWMW7tS1fSHyvfKC"
+    } else {
+      "1dDj8RzHSDyaG19N9OgPV371vdRzZY7e8"
+    }
+  )
 
   # Download all files recursively
   download_drive_recursive(
@@ -143,14 +156,53 @@ data_om <- ecosystemom::load_model(
   # TODO: define year range
   dplyr::filter(year %in% years)
 
-# Load environmental data (TEMPORARY)
-# TODO: this generates fake SST data and should be removed later
-data_sst <- generate_sst_data(years_vector = years)
-data_environment <- ecosystemom::load_csv_environmental_data(
-  file_path = file.path(data_destination, "simulated_sst.csv"),
-  lag_months = 12,
-  impacted_group = "Menhaden (0yr)"
-)
+# Load environmental data
+if (egg_production) {
+  data_raw_pp <- read.csv(file.path(data_destination, "PP_integrated_raw_relative.csv"))
+  # Convert raw PP data to a tibble with both year and month columns
+  # The original data_raw_pp only contains time column that sort by year and month
+  data_pp <- data_raw_pp |>
+    dplyr::mutate(
+      # Check if the row contains a 4-digit year
+      is_year = grepl("^\\d{4}$", Time),
+      # Extract the year and forward-fill down through the months
+      year = as.integer(ifelse(is_year, Time, NA_integer_)),
+      # Rows with the year represent January; otherwise keep the month name
+      month_name = ifelse(is_year, "Jan", Time)
+    ) |>
+    tidyr::fill(year, .direction = "down") |>
+    dplyr::mutate(
+      index = "PP",
+      month = match(month_name, month.abb),
+      value = as.numeric(Value),
+      unit  = NA
+    ) |>
+    dplyr::select(index, year, month, value, unit)
+  write.csv(data_pp, file.path(data_destination, "PP_integrated_processed.csv"), row.names = FALSE)
+
+  # PP values between 1980 - 1997 are the same, so
+  # environmental covariates will be considered from
+  # 1998 onwards
+  pp_years <- 1998:2023
+  pp_annual <- data_pp |>
+    dplyr::group_by(year) |>
+    dplyr::summarise(
+      pp_mean = mean(value, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::arrange(year) |>
+    # PP values between 1980-1997 are the same, exclude
+    # them from the analysis
+    dplyr::filter(year %in% pp_years)
+
+  data_environment <- ecosystemom::load_csv_environmental_data(
+    file_path = file.path(data_destination, "PP_integrated_processed.csv"),
+    lag_months = 0,
+    impacted_group = "Menhaden (0yr)"
+  )
+} else {
+  data_environment <- NULL
+}
 
 # Load diet composition data
 data_diet_composition <- ecosystemom::load_diet_composition(
@@ -291,7 +343,7 @@ average_natural_mortality_agecomp_om <- natural_mortality_agecomp_om |>
     .groups = "drop"
   )
 
-# Option 1: Estimate time-varying selectivity from fishing mortality-at-age
+# Option 1 (not used): Estimate time-varying selectivity from fishing mortality-at-age
 catch_selectivity <- ecosystemom::estimate_true_selectivity(
   data = fishing_mortality_agecomp_om,
   ages = ages,
@@ -400,14 +452,24 @@ survey_agecomp_sampled <- survey_data |>
   ) |>
   dplyr::rename(truth_value = truth_value_selected_number)
 
+# PP index
+pp_fleet_name <- "pp_fleet"
+pp_index_sd <- 0.1
+if (egg_production) {
+  pp_index_sampled <- pp_annual |>
+    dplyr::mutate(
+      sampled_value = ecosystemom::sample_lognormal(
+        x = pp_mean,
+        sd = pp_index_sd
+      )
+    )
+}
+
 # YOY survey for age-0
 yoy_fleet_name <- "yoy_fleet"
 yoy_q <- 0.05
 yoy_index_sd <- 0.1
 yoy_selectivity <- c(1, 0, 0, 0, 0)
-# names(yoy_selectivity) <- functional_groups |>
-#   dplyr::filter(species == "menhaden") |>
-#   dplyr::pull(group)
 yoy_index_sampled <- number_agecomp_om |>
   dplyr::left_join(
     weight_agecomp_om |>
@@ -448,265 +510,266 @@ yoy_selectivity <- yoy_selectivity_ascending * (1 - yoy_selectivity_descending)
 source(file.path("Rscript", "prepare_fims_data.R"))
 source(file.path("Rscript", "prepare_fims_parameters.R"))
 
-# Initialize and fit the FIMS estimation model
-fit_fims_fixed_effects_logdevs <- parameters_fixed_effects_logdevs |>
-  FIMS::initialize_fims((data = data_fims)) |>
-  FIMS::fit_fims(
-    optimize = TRUE,
-    control = list(
-      eval.max = 50000,
-      iter.max = 30000,
-      trace = 0
-    )
-  )
-FIMS::clear()
+# Initialize and fit each scenario without changing the full input data.
+fit_fims_scenario <- function(params, scenario_name) {
+  cat("#### Running scenario ", scenario_name, "\n")
+  FIMS::clear()
+  scenario_data <- data_fims@data |>
+    dplyr::filter(fleet %in% params$fleet)
+  if (scenario_name == "scenario_with_pp_partial_yoy") {
+    scenario_data <- scenario_data |>
+      dplyr::filter(!(fleet == yoy_fleet_name & timing %in% pp_years))
+  }
 
-fit_fims <- parameters |>
-  FIMS::initialize_fims((data = data_fims)) |>
-  FIMS::fit_fims(
-    optimize = TRUE,
-    control = list(
-      eval.max = 50000,
-      iter.max = 30000,
-      trace = 0
+  params |>
+    FIMS::initialize_fims(data = FIMS::FIMSFrame(scenario_data)) |>
+    FIMS::fit_fims(
+      optimize = TRUE,
+      control = list(eval.max = 50000, iter.max = 30000, trace = 0)
     )
-  )
+}
 
-# Extract estimates
+fit_fims_fixed_effects_log_devs <- Map(
+  fit_fims_scenario,
+  parameters_fixed_effects_logdevs,
+  names(parameters_fixed_effects_logdevs)
+)
+fit_fims_random_effects_log_devs <- Map(
+  fit_fims_scenario,
+  parameters_scenarios,
+  names(parameters_scenarios)
+)
+
+# Create a lookup table for years to match FIMS year indices with actual years.
 year_lookup <- data.frame(
   year_i = 1:(length(years) + 1),
   year = c(years, get_end_year(data_fims) + 1)
 )
 
-estimates_fims <- FIMS::get_estimates(fit_fims) |>
-  dplyr::left_join(
-    year_lookup,
-    by = c("year_i")
-  ) |>
-  dplyr::mutate(
-    uncertainty_label = "se",
-    estimate = estimated,
-    age = age_i
-  )
-
-asc_ip  <- estimates_fims |>
-  dplyr::filter(module_id == 1, label == "inflection_point_asc") |> 
-  dplyr::pull(estimated)
-asc_s   <- estimates_fims |>
-  dplyr::filter(module_id == 1, label == "slope_asc") |>
-  dplyr::pull(estimated)
-desc_ip <- estimates_fims |>
-  dplyr::filter(module_id == 1, label == "inflection_point_desc") |> 
-  dplyr::pull(estimated)
-desc_s  <- estimates_fims |>
-  dplyr::filter(module_id == 1, label == "slope_desc") |> 
-  dplyr::pull(estimated)
-
-# Compute true peak max across ages
-fine_ages <- seq(0, 4, by = 1)
-s_asc     <- 1 / (1 + exp(-asc_s * (fine_ages - asc_ip)))
-s_desc    <- 1 / (1 + exp(-desc_s * (fine_ages - desc_ip)))
-s_max_estimated <- max(s_asc * (1 - s_desc))
-
-estimates_fims <- estimates_fims |>
-  # Multiply estimated fishing mortality by max selectivity
-  dplyr::mutate(
-    estimate = dplyr::if_else(
-      label == "log_Fmort" & module_id == 1,
-      log(exp(estimate) * s_max_estimated),
-      estimate
-    )
-  )
-FIMS::clear()
-
-estimates_fims |>
-  dplyr::filter(estimation_type == "fixed_effects" | estimation_type == "random_effects") |>
-  dplyr::select(module_name, label, fleet, year, age_i, input, estimate, uncertainty) |>
-  print(n = Inf)
-
-# Compare OM and FIMS
-shared_scales <- list(
-  ggplot2::scale_linetype_manual(
-    name = "Model",
-    labels = c("EM", "OM"),
-    values = c("solid", "dashed")
+# Combine fitted FIMS scenarios into a single list for further processing.
+fit_scenarios <- c(
+  stats::setNames(
+    fit_fims_fixed_effects_log_devs,
+    paste("Fixed effects", names(parameters_fixed_effects_logdevs), sep = ": ")
   ),
-  ggplot2::scale_color_manual(
-    name = "Model",
-    labels = c("EM", "OM"),
-    values = c(
-      "EM" = "black",
-      "OM" = "#003087"
-    )
+  stats::setNames(
+    fit_fims_random_effects_log_devs,
+    paste("Random effects", names(parameters_scenarios), sep = ": ")
   )
 )
 
-# Biomass
-biomass_om <- biomass_index_om |>
-  dplyr::select(year = truth_year, OM = truth_value)
-
-biomass_em <- stockplotr::filter_data(
-  estimates_fims |>
-    dplyr::filter(
-      label == "biomass",
-      year %in% years
-    ),
-  label_name = "biomass",
-  geom = "line"
-) |>
-  dplyr::mutate(group_var = "EM")
-
-cbind(biomass_om$OM, biomass_em$estimated)
-stockplotr::plot_timeseries(
-  biomass_em,
-  x = "year",
-  y = "estimate",
-  ylab = "biomass (metric ton)"
-) +
-  stockplotr::theme_noaa() +
-  ggplot2::geom_line(
-    data = biomass_om,
-    ggplot2::aes(x = year, y = OM, color = "OM"),
-    linetype = "dashed"
-  ) +
-  shared_scales
-
-# Recruitment
-recruitment_om <- number_agecomp_om |>
-  dplyr::filter(truth_group == "0yr") |>
-  dplyr::select(year = truth_year, OM = truth_value)
-
-recruitment_em <- stockplotr::filter_data(
-  estimates_fims |>
-    dplyr::filter(
-      label == "expected_recruitment",
-      year %in% years
-    ),
-  label_name = "expected_recruitment",
-  geom = "line"
-) |>
-  dplyr::mutate(group_var = "EM")
-
-stockplotr::plot_timeseries(
-  recruitment_em,
-  x = "year",
-  y = "estimate",
-  ylab = "recruitment (metric ton)"
-) +
-  stockplotr::theme_noaa() +
-  ggplot2::geom_line(
-    data = recruitment_om,
-    ggplot2::aes(x = year, y = OM, color = "OM"),
-    linetype = "dashed"
-  ) +
-  shared_scales
-
-# Fishing mortality
-f_om <- fishing_mortality_index_om |>
-  dplyr::select(year = truth_year, OM = truth_value) |>
-  dplyr::mutate(OM = log(OM))
-
-f_em <- stockplotr::filter_data(
-  estimates_fims |>
-    dplyr::filter(module_id == 1),
-  label_name = "log_Fmort$",
-  geom = "line"
-) |>
-  dplyr::mutate(group_var = "EM")
-
-stockplotr::plot_timeseries(
-  f_em,
-  x = "year",
-  y = "estimate",
-  ylab = "natural log of Fishing Mortality"
-) +
-  stockplotr::theme_noaa() +
-  ggplot2::geom_line(
-    data = f_om,
-    ggplot2::aes(x = year, y = OM, color = "OM"),
-    linetype = "dashed"
-  ) +
-  ggplot2::scale_linetype_manual(
-    name = "Model",
-    labels = c("EM", "OM"),
-    values = c("solid", "dashed")
-  ) +
-  ggplot2::scale_color_manual(
-    name = "Model",
-    labels = c("OM", "EM"),
-    values = c(
-      "OM" = "#003087",
-      "EM" = "black"
-    )
+# FIMS exposes convergence diagnostics through get_convergence().
+check_convergence <- function(fit) {
+  diagnostics <- FIMS::get_convergence(fit)
+  required_checks <- c(
+    "optimizer", "max_gradient", "nll", "hessian",
+    "standard_errors", "large_standard_errors",
+    "condition_number"
   )
+  all(required_checks %in% diagnostics$check) &&
+    !anyNA(diagnostics$severity) &&
+    all(diagnostics$severity[diagnostics$check %in% required_checks] == "OK") &&
+    !any(diagnostics$severity == "FAIL")
+}
+scenario_converged <- vapply(fit_scenarios, check_convergence, logical(1))
 
-shared_scales <- list(
-  stockplotr::theme_noaa(),
-  ggplot2::scale_color_manual(
-    labels = c("Estimated", "Observed"),
-    values = c("black", "#003087")
-  ),
-  ggplot2::guides(
-    color = ggplot2::guide_legend(
-      override.aes = list( 
-        shape = c(NA, 16),          # No dot for estimate, circle (16) for Observed
-        linetype = c("solid", "blank") # Solid line for estimate, no line for Observed
+# Extract estimates from each fitted FIMS scenario and combine them into a single data frame.
+estimates_fims <- purrr::imap_dfr(fit_scenarios, function(fit, scenario) {
+  estimates <- FIMS::get_estimates(fit) |>
+    dplyr::left_join(year_lookup, by = "year_i") |>
+    dplyr::mutate(
+      scenario = scenario,
+      uncertainty_label = "se",
+      estimate = estimated,
+      age = age
+    )
+
+  selectivity <- estimates |>
+    dplyr::filter(
+      module_name == "Selectivity",
+      fleet == fishing_fleet_name,
+      label %in% c(
+        "inflection_point_asc", "slope_asc",
+        "inflection_point_desc", "slope_desc"
       )
     )
+  if (nrow(selectivity) != 4L || anyDuplicated(selectivity$label)) {
+    stop("Expected four fishing-fleet selectivity parameters for ", scenario)
+  }
+  selectivity_parameters <- stats::setNames(
+    selectivity$estimated, selectivity$label
   )
+  s_asc <- stats::plogis(
+    selectivity_parameters[["slope_asc"]] *
+      (ages - selectivity_parameters[["inflection_point_asc"]])
+  )
+  s_desc <- stats::plogis(
+    selectivity_parameters[["slope_desc"]] *
+      (ages - selectivity_parameters[["inflection_point_desc"]])
+  )
+  s_max_estimated <- max(s_asc * (1 - s_desc))
+  if (!is.finite(s_max_estimated) || s_max_estimated <= 0) {
+    stop("Invalid peak fishing-fleet selectivity for ", scenario)
+  }
+
+  # Convert fishing-fleet F to apical F separately for each fitted scenario.
+  estimates |>
+    dplyr::mutate(
+      estimate = dplyr::if_else(
+        label == "log_Fmort" & fleet == fishing_fleet_name,
+        estimate + log(s_max_estimated),
+        estimate
+      )
+    )
+})
+FIMS::clear()
+
+# Print combined FIMS estimates for fixed and random effects scenarios.
+estimates_fims |>
+  dplyr::filter(estimation_type == "fixed_effects" | estimation_type == "random_effects") |>
+  dplyr::select(scenario, module_name, label, fleet, year, age, input, estimate, uncertainty) |>
+  print(n = Inf)
+
+comparison_om <- dplyr::bind_rows(
+  biomass_index_om |>
+    dplyr::transmute(
+      year = truth_year,
+      estimate = truth_value,
+      label = "biomass"
+    ),
+  number_agecomp_om |>
+    dplyr::filter(truth_group == "0yr") |>
+    dplyr::transmute(
+      year = truth_year,
+      estimate = truth_value,
+      label = "expected_recruitment"
+    ),
+  fishing_mortality_index_om |>
+    dplyr::transmute(
+      year = truth_year,
+      estimate = log(truth_value),
+      label = "log_Fmort"
+    )
 )
-# Survey
-survey_index_data <- stockplotr::filter_data(
-  estimates_fims |> dplyr::filter(module_id == 2),
-  label_name = "^index_expected$",
-  geom = "line"
-) |>
-  dplyr::mutate(group_var = "Estimated")
 
-stockplotr::plot_timeseries(
-  survey_index_data,
-  x = "year",
-  y = "estimate",
-  ylab = "Relative Index of Biomass"
-) +
-  ggplot2::geom_point(
-    data = survey_index_data,
-    ggplot2::aes(x = year, y = estimate, color = "Estimated")
-  ) +
-  ggplot2::geom_point(
-    data = survey_index_data,
-    ggplot2::aes(x = year, y = observed, color = "Observed")
-  ) +
-  shared_scales
+comparison_labels <- c(
+  biomass = "Biomass (metric tons)",
+  expected_recruitment = "Recruits (numbers)",
+  log_Fmort = "Natural log of fishing mortality"
+)
 
-# Catch
-catch_data <- stockplotr::filter_data(
-    estimates_fims |> dplyr::filter(module_id == 1),
-    label_name = "^catch_expected$",
-    geom = "line"
-) |>
-  dplyr::mutate(group_var = "Estimated")
+comparison_em <- purrr::map_dfr(names(comparison_labels), function(quantity_label) {
+  stockplotr::filter_data(
+    estimates_fims |>
+      dplyr::filter(
+        year %in% years,
+        label == quantity_label,
+        label != "log_Fmort" | fleet == fishing_fleet_name
+      ) |>
+      dplyr::mutate(
+        uncertainty = dplyr::if_else(
+          is.finite(uncertainty) & uncertainty >= 0, uncertainty, NA_real_
+        )
+      ),
+    label_name = paste0("^", quantity_label, "$"),
+    geom = "line",
+    interactive = FALSE
+  ) |>
+    dplyr::mutate(
+      label = quantity_label,
+      estimate_lower = dplyr::if_else(
+        label == "log_Fmort", estimate_lower, pmax(0, estimate_lower)
+      )
+    )
+})
 
-stockplotr::plot_timeseries(
-  catch_data,
-  x = "year",
-  y = "estimate",
-  ylab = "Catch (metric tons)"
-) +
-  ggplot2::geom_point(
-    data = catch_data,
-    ggplot2::aes(x = year, y = estimate, color = "Estimated")
+scenario_figures <- lapply(names(fit_scenarios), function(scenario_name) {
+  scenario_estimates <- comparison_em |>
+    dplyr::filter(scenario == scenario_name)
+  if (
+    nrow(scenario_estimates) != length(years) * length(comparison_labels) ||
+      anyDuplicated(scenario_estimates[c("year", "label")]) ||
+      any(!is.finite(scenario_estimates$estimate))
+  ) {
+    stop("Missing, duplicated, or non-finite comparison estimates for ", scenario_name)
+  }
+
+  uncertainty_available <- is.finite(scenario_estimates$estimate_lower) &
+    is.finite(scenario_estimates$estimate_upper)
+  if (any(!uncertainty_available)) {
+    warning(
+      "Uncertainty unavailable for some EM estimates in ", scenario_name,
+      call. = FALSE
+    )
+    scenario_estimates$estimate_lower[!uncertainty_available] <- NA_real_
+    scenario_estimates$estimate_upper[!uncertainty_available] <- NA_real_
+  }
+  plot_warnings <- c(
+    if (!scenario_converged[[scenario_name]]) "EM not converged",
+    if (any(!uncertainty_available)) "Uncertainty unavailable for some EM estimates"
+  )
+
+  scenario_data <- dplyr::bind_rows(
+    scenario_estimates |>
+      dplyr::mutate(group_var = "EM"),
+    comparison_om |>
+      dplyr::mutate(group_var = "OM")
+  ) |>
+    dplyr::mutate(
+      model = "1",
+      quantity = factor(
+        label,
+        levels = names(comparison_labels),
+        labels = unname(comparison_labels)
+      )
+    )
+
+  stockplotr::plot_timeseries(
+    scenario_data,
+    x = "year",
+    y = "estimate"
   ) +
-  ggplot2::geom_point(
-    data = catch_data,
-    ggplot2::aes(x = year, y = observed, color = "Observed")
-  ) +
-  shared_scales
+    ggplot2::aes(linetype = group_var) +
+    ggplot2::facet_wrap(~quantity, ncol = 1, scales = "free_y") +
+    ggplot2::scale_color_manual(
+      name = "Model", values = c(EM = "black", OM = "#003087")
+    ) +
+    ggplot2::scale_fill_manual(
+      values = c(EM = "black", OM = "#003087"), guide = "none"
+    ) +
+    ggplot2::scale_linetype_manual(
+      name = "Model", values = c(EM = "solid", OM = "dashed")
+    ) +
+    ggplot2::guides(linetype = ggplot2::guide_legend()) +
+    stockplotr::theme_noaa() +
+    ggplot2::labs(
+      title = gsub("_", " ", scenario_name),
+      subtitle = paste(plot_warnings, collapse = "; "),
+      caption = paste(
+        "Shading: 95% Wald intervals (biomass/recruits bounded below by zero).",
+        "F intervals condition on estimated selectivity.",
+        sep = "\n"
+      ),
+      x = "Year",
+      y = NULL
+    ) +
+    ggplot2::theme(
+      plot.subtitle = ggplot2::element_text(color = "red", face = "bold"),
+      legend.position = "bottom"
+    )
+})
+names(scenario_figures) <- names(fit_scenarios)
+
+# One PDF page per scenario, with all three OM/EM comparisons.
+fs::dir_create(figures_path)
+scenario_pdf <- file.path(figures_path, "fims_scenario_comparisons.pdf")
+grDevices::pdf(scenario_pdf, width = 10, height = 11, onefile = TRUE)
+tryCatch(
+  invisible(lapply(scenario_figures, print)),
+  finally = grDevices::dev.off()
+)
 
 #### ---------- Plot data ####
-figures_path <- file.path(getwd(), "figures", "ecosim_sefsc")
-fs::dir_create(figures_path)
-
 biomass_index_figure <- ggplot2::ggplot(
   biomass_index_om,
   ggplot2::aes(x = truth_year, y = truth_value)
@@ -820,28 +883,30 @@ plot_survey_vs_catch(
 )
 
 #### ---------- DSEM analysis ####
-# Generate candidate SEM lines and reshape time series data
-# diet_composition_threshold controls which trophic links are included.
-# It could be changed. The current implementation uses static diet composition
-# from Ecopth->input->Diet composition, but it actually
-# changes over time in the EwE model as prey become more/less available.
-# TODO: support time-varying diet composition from EwE outputs?
-sem <- ecosystemom::create_dsem_inputs(
-  data = data_dsem,
-  focal_functional_group = "Menhaden (0yr)",
-  diet_composition_threshold = 0.05
-)
+if (egg_production) {
+  # Generate candidate SEM lines and reshape time series data
+  # diet_composition_threshold controls which trophic links are included.
+  # It could be changed. The current implementation uses static diet composition
+  # from Ecopth->input->Diet composition, but it actually
+  # changes over time in the EwE model as prey become more/less available.
+  # TODO: support time-varying diet composition from EwE outputs?
+  sem <- ecosystemom::create_dsem_inputs(
+    data = data_dsem,
+    focal_functional_group = "Menhaden (0yr)",
+    diet_composition_threshold = 0.1
+  )
 
-# Fit Dynamic Structural Equation Model (DSEM)
-# TODO: improve model specification beyond simple linear relationships
-fit_dsem <- dsem::dsem(
-  sem = sem[["sem_lines"]],
-  tsdata = sem[["data_time_series_sem"]][[1]],
-  control = dsem::dsem_control(quiet = TRUE)
-)
+  # Fit Dynamic Structural Equation Model (DSEM)
+  # TODO: improve model specification beyond simple linear relationships
+  fit_dsem <- dsem::dsem(
+    sem = sem[["sem_lines"]],
+    tsdata = sem[["data_time_series_sem"]][[1]],
+    control = dsem::dsem_control(quiet = TRUE)
+  )
 
-# Display model summary
-fit_dsem |>
-  summary() |>
-  dplyr::select(path, Estimate, Std_Error, p_value) |>
-  knitr::kable(digits = 3)
+  # Display model summary
+  fit_dsem |>
+    summary() |>
+    dplyr::select(path, Estimate, Std_Error, p_value) |>
+    knitr::kable(digits = 3)
+}
