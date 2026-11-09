@@ -1,6 +1,6 @@
 # Define selectivity updates for each fleet
 selectivity_temp <- FIMS::setup_default_Selectivity(
-  data = data_fims, 
+  data = data_fims,
   fleet = fishing_fleet_name,
   module_type = "DoubleLogistic"
 )
@@ -20,6 +20,23 @@ selectivity_fishing_fleet <- selectivity_temp |>
         catch_selectivity_slope_asc,
         catch_selectivity_inflection_point_desc,
         catch_selectivity_slope_desc
+      )
+    ),
+    by = c("fleet", "label")
+  )
+
+selectivity_pp_fleet <- if (egg_production) selectivity_temp |>
+  dplyr::mutate(fleet = pp_fleet_name) |>
+  dplyr::rows_update(
+    y = tibble::tibble(
+      fleet = pp_fleet_name,
+      label = c("inflection_point_asc", "slope_asc", "inflection_point_desc", "slope_desc"),
+      estimation_type = "constant",
+      value = c(
+        yoy_inflection_point_asc,
+        yoy_slope_asc,
+        yoy_inflection_point_desc,
+        yoy_slope_desc
       )
     ),
     by = c("fleet", "label")
@@ -74,19 +91,32 @@ recruitment_ewe <- number_agecomp_om |>
 log_sd_proxy <- (sd(log(recruitment_ewe) - mean(log(recruitment_ewe)))) |>
   log()
 
+# Approximate mean age-0 biomass from the OM to set a sensible starting q
+b0_mean <- mean(
+  (number_agecomp_om |> dplyr::filter(truth_group == "0yr") |> dplyr::pull(truth_value)) *
+    (weight_agecomp_om |> dplyr::filter(truth_group == "0yr") |> dplyr::pull(truth_value))
+)
+
+# Initial catchability scalar: q ~ observed_index / selected_biomass
+if (egg_production) {
+  pp_initial_q <- mean(pp_index_sampled[["sampled_value"]]) / b0_mean
+}
+
 # Create default parameter values from the updated model configuration
 parameters <- FIMS::setup_default_parameters(data = data_fims) |>
   dplyr::filter(
     !(fleet %in% c(
       fishing_fleet_name,
       survey_fleet_name,
-      yoy_fleet_name
+      yoy_fleet_name,
+      pp_fleet_name
     ) & module_name == "Selectivity")
   ) |>
   dplyr::bind_rows(
     selectivity_fishing_fleet,
     selectivity_survey_fleet,
-    selectivity_yoy_fleet
+    selectivity_yoy_fleet,
+    selectivity_pp_fleet
   ) |>
   dplyr::rows_update(
     y = tibble::tibble(
@@ -106,7 +136,7 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
       value = log(catchability_survey)
     ),
     by = c("fleet", "label")
-  )  |>
+  ) |>
   dplyr::rows_update(
     y = tibble::tibble(
       fleet = yoy_fleet_name,
@@ -157,11 +187,11 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
   ) |>
   dplyr::rows_update(
     y = tibble::tibble(
-     label = "log_devs",
-     module_type = "BevertonHolt",
-     estimation_type = "random_effects"
+      label = "log_devs",
+      module_type = "BevertonHolt",
+      estimation_type = "random_effects"
     ),
-   by = c("label", "module_type")
+    by = c("label", "module_type")
   ) |>
   dplyr::filter(!(module_name == "Maturity")) |>
   dplyr::bind_rows(maturity_parameters) |>
@@ -193,12 +223,54 @@ parameters <- FIMS::setup_default_parameters(data = data_fims) |>
     by = c("label", "age")
   )
 
-# If label == log_devs, change estimation_type to be fixed_effects
-parameters_fixed_effects_logdevs <- parameters |>
-  dplyr::mutate(
-    estimation_type = dplyr::if_else(
-      label == "log_devs",
-      "fixed_effects",
-      estimation_type
+if (egg_production) {
+  parameters <- parameters |>
+    dplyr::rows_update(
+      y = tibble::tibble(
+        fleet = pp_fleet_name,
+        label = "log_q",
+        estimation_type = "fixed_effects",
+        value = log(pp_initial_q)
+      ),
+      by = c("fleet", "label")
     )
-  )
+}
+
+# Non-egg runs use only the baseline; egg runs also compare PP treatments.
+parameters_scenarios <- list(
+  scenario_without_pp = parameters |>
+    dplyr::filter(
+      !(fleet %in% c(pp_fleet_name))
+    )
+)
+if (egg_production) {
+  parameters_scenarios <- c(parameters_scenarios, list(
+    scenario_with_pp_only = parameters |>
+      dplyr::filter(
+        !(fleet %in% c(yoy_fleet_name))
+      ),
+    scenario_with_pp_all_yoy = parameters,
+    scenario_with_pp_partial_yoy = parameters
+  ))
+}
+
+# If label == log_devs, change estimation_type to be fixed_effects
+# and change estimation_type to constant
+parameters_fixed_effects_logdevs <- parameters_scenarios |>
+  lapply(function(params) {
+    params |>
+      dplyr::mutate(
+        estimation_type = dplyr::if_else(
+          label == "log_devs",
+          "fixed_effects",
+          estimation_type
+        )
+      ) |>
+      dplyr::mutate(
+        estimation_type = dplyr::if_else(
+          label == "log_sd" & module_type == "BevertonHolt",
+          "constant",
+          estimation_type
+        )
+      )
+  })

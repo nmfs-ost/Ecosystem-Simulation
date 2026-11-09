@@ -12,7 +12,21 @@ catch_data <- data.frame(
   )
 )
 
+# index data
 index_data <- rbind(
+  if (egg_production) data.frame(
+    type = "index",
+    fleet = pp_fleet_name,
+    age = NA,
+    timing = pp_years,
+    observed = pp_index_sampled[["sampled_value"]],
+    unit = "mt",
+    uncertainty = paste(
+      "~ dlnorm(meanlog = log_index_expected, sdlog = ",
+      pp_index_sd,
+      ")"
+    )
+  ),
   data.frame(
     type = "index",
     fleet = yoy_fleet_name,
