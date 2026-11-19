@@ -236,11 +236,23 @@ if (egg_production) {
     )
 }
 
-# Non-egg runs use only the baseline; egg runs also compare PP treatments.
+# Compare PP treatments in egg runs and YOY inclusion in non-egg runs.
 parameters_scenarios <- list(
   scenario_without_pp = parameters |>
     dplyr::filter(
       !(fleet %in% c(pp_fleet_name))
+    ),
+  scenario_without_known_M = parameters |>
+    dplyr::filter(
+      !(fleet %in% c(pp_fleet_name))
+    ) |>
+    # change natural mortality
+    dplyr::mutate(
+      value = dplyr::if_else(
+        label == "log_M",
+        value + log(0.01),
+        value
+      )
     )
 )
 if (egg_production) {

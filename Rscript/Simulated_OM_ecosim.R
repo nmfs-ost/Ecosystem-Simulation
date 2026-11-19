@@ -65,7 +65,7 @@ catch_agecomp_sample_size <- 120
 
 # Define survey fleet for ages 1-4+
 # Define fleet name
-survey_fleet_name <- "survey_fleet"
+survey_fleet_name <- "adult_survey_fleet"
 # TODO:
 # - Define realistic catchability and selectivity patterns
 # Define survey catchability
@@ -526,7 +526,7 @@ fit_fims_scenario <- function(params, scenario_name) {
     FIMS::fit_fims(
       optimize = TRUE,
       control = list(eval.max = 50000, iter.max = 30000, trace = 0)
-    )
+    ) 
 }
 
 fit_fims_fixed_effects_log_devs <- Map(
@@ -538,12 +538,6 @@ fit_fims_random_effects_log_devs <- Map(
   fit_fims_scenario,
   parameters_scenarios,
   names(parameters_scenarios)
-)
-
-# Create a lookup table for years to match FIMS year indices with actual years.
-year_lookup <- data.frame(
-  year_i = 1:(length(years) + 1),
-  year = c(years, get_end_year(data_fims) + 1)
 )
 
 # Combine fitted FIMS scenarios into a single list for further processing.
@@ -576,12 +570,10 @@ scenario_converged <- vapply(fit_scenarios, check_convergence, logical(1))
 # Extract estimates from each fitted FIMS scenario and combine them into a single data frame.
 estimates_fims <- purrr::imap_dfr(fit_scenarios, function(fit, scenario) {
   estimates <- FIMS::get_estimates(fit) |>
-    dplyr::left_join(year_lookup, by = "year_i") |>
     dplyr::mutate(
       scenario = scenario,
       uncertainty_label = "se",
-      estimate = estimated,
-      age = age
+      estimate = estimated
     )
 
   selectivity <- estimates |>
@@ -683,7 +675,40 @@ comparison_em <- purrr::map_dfr(names(comparison_labels), function(quantity_labe
     )
 })
 
-scenario_figures <- lapply(names(fit_scenarios), function(scenario_name) {
+plot_scenario_comparison <- function(
+  scenario_data, scenario_name, plot_warnings, show_scenario_title = TRUE
+) {
+  stockplotr::plot_timeseries(
+    scenario_data,
+    x = "year",
+    y = "estimate"
+  ) +
+    ggplot2::aes(linetype = group_var) +
+    ggplot2::facet_wrap(~quantity, ncol = 1, scales = "free_y") +
+    ggplot2::scale_color_manual(
+      name = "Model", values = c(EM = "black", OM = "#003087")
+    ) +
+    ggplot2::scale_fill_manual(
+      values = c(EM = "black", OM = "#003087"), guide = "none"
+    ) +
+    ggplot2::scale_linetype_manual(
+      name = "Model", values = c(EM = "solid", OM = "dashed")
+    ) +
+    ggplot2::guides(linetype = ggplot2::guide_legend()) +
+    stockplotr::theme_noaa() +
+    ggplot2::labs(
+      title = if (show_scenario_title) gsub("_", " ", scenario_name) else NULL,
+      subtitle = paste(plot_warnings, collapse = "; "),
+      x = "Year",
+      y = NULL
+    ) +
+    ggplot2::theme(
+      plot.subtitle = ggplot2::element_text(color = "red", face = "bold"),
+      legend.position = "bottom"
+    )
+}
+
+scenario_results <- lapply(names(fit_scenarios), function(scenario_name) {
   scenario_estimates <- comparison_em |>
     dplyr::filter(scenario == scenario_name)
   if (
@@ -724,50 +749,51 @@ scenario_figures <- lapply(names(fit_scenarios), function(scenario_name) {
       )
     )
 
-  stockplotr::plot_timeseries(
-    scenario_data,
-    x = "year",
-    y = "estimate"
-  ) +
-    ggplot2::aes(linetype = group_var) +
-    ggplot2::facet_wrap(~quantity, ncol = 1, scales = "free_y") +
-    ggplot2::scale_color_manual(
-      name = "Model", values = c(EM = "black", OM = "#003087")
-    ) +
-    ggplot2::scale_fill_manual(
-      values = c(EM = "black", OM = "#003087"), guide = "none"
-    ) +
-    ggplot2::scale_linetype_manual(
-      name = "Model", values = c(EM = "solid", OM = "dashed")
-    ) +
-    ggplot2::guides(linetype = ggplot2::guide_legend()) +
-    stockplotr::theme_noaa() +
-    ggplot2::labs(
-      title = gsub("_", " ", scenario_name),
-      subtitle = paste(plot_warnings, collapse = "; "),
-      caption = paste(
-        "Shading: 95% Wald intervals (biomass/recruits bounded below by zero).",
-        "F intervals condition on estimated selectivity.",
-        sep = "\n"
-      ),
-      x = "Year",
-      y = NULL
-    ) +
-    ggplot2::theme(
-      plot.subtitle = ggplot2::element_text(color = "red", face = "bold"),
-      legend.position = "bottom"
+  list(
+    data = scenario_data,
+    warnings = plot_warnings,
+    figure = plot_scenario_comparison(
+      scenario_data, scenario_name, plot_warnings
     )
+  )
 })
-names(scenario_figures) <- names(fit_scenarios)
+names(scenario_results) <- names(fit_scenarios)
+scenario_figures <- purrr::map(scenario_results, "figure")
 
 # One PDF page per scenario, with all three OM/EM comparisons.
 fs::dir_create(figures_path)
+purrr::iwalk(scenario_results, function(result, scenario_name) {
+  scenario_file_name <- gsub("[^A-Za-z0-9_-]+", "_", scenario_name)
+  purrr::walk(names(comparison_labels), function(quantity_name) {
+    individual_data <- result$data |>
+      dplyr::filter(label == quantity_name)
+    individual_figure <- plot_scenario_comparison(
+      individual_data, scenario_name, result$warnings,
+      show_scenario_title = FALSE
+    )
+    ggplot2::ggsave(
+      filename = paste0(
+        "fims_scenario_comparison_", scenario_file_name, "_", quantity_name, ".png"
+      ),
+      path = figures_path,
+      plot = individual_figure,
+      width = 10,
+      height = 6,
+      dpi = 300
+    )
+  })
+})
+
 scenario_pdf <- file.path(figures_path, "fims_scenario_comparisons.pdf")
 grDevices::pdf(scenario_pdf, width = 10, height = 11, onefile = TRUE)
 tryCatch(
   invisible(lapply(scenario_figures, print)),
   finally = grDevices::dev.off()
 )
+
+# plot data and save the figure
+plot(data_fims)
+ggsave(file.path(figures_path, "data_fims_plot.png"))
 
 #### ---------- Plot data ####
 biomass_index_figure <- ggplot2::ggplot(
